@@ -518,7 +518,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v38:${imdbId}`;
+  const cacheKey = `trailer:v39:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
