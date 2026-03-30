@@ -52,7 +52,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+async function fetchWithTimeout(url, options = {}, timeout = 4000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -92,15 +92,11 @@ async function getTMDBMetadata(imdbId, type = 'movie') {
     );
     const findData = await findRes.json();
 
-    let results = type === 'series'
-      ? findData.tv_results
-      : findData.movie_results;
+    let results = type === 'series' ? findData.tv_results : findData.movie_results;
     let actualType = type;
 
     if (!results || results.length === 0) {
-      results = type === 'series'
-        ? findData.movie_results
-        : findData.tv_results;
+      results = type === 'series' ? findData.movie_results : findData.tv_results;
       actualType = type === 'series' ? 'movie' : 'series';
     }
 
@@ -183,7 +179,7 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
 
     for (const candidate of candidates.slice(0, 3)) {
       try {
-        const m3u8Res = await fetchWithTimeout(candidate.url, {}, 4000);
+        const m3u8Res = await fetchWithTimeout(candidate.url, {}, 3000);
         const m3u8Text = await m3u8Res.text();
 
         if (candidates.length > 1) {
@@ -225,44 +221,44 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
 }
 
 async function resolveAppleTV(imdbId, wikidataIdsPromise) {
-  const isShow = false; // será corrigido abaixo se necessário
-
-  // Se há override de ID, arranca imediatamente sem esperar pelo Wikidata
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
   if (idOverride) {
-    return await resolveAppleTVForLocale(idOverride.id, isShow, idOverride.locale);
+    return await resolveAppleTVForLocale(idOverride.id, false, idOverride.locale);
   }
 
-  // Caso contrário espera pelo Wikidata
   const wikidataIds = await wikidataIdsPromise;
   const appleId = wikidataIds?.appleTvId;
   if (!appleId) return null;
 
-  const isShowWiki = wikidataIds?.isAppleTvShow || false;
+  const isShow = wikidataIds?.isAppleTvShow || false;
   const localeOverride = APPLETV_LOCALE_OVERRIDES[imdbId];
   if (localeOverride) {
-    return await resolveAppleTVForLocale(appleId, isShowWiki, localeOverride);
+    return await resolveAppleTVForLocale(appleId, isShow, localeOverride);
   }
 
-  const ptResult = await resolveAppleTVForLocale(appleId, isShowWiki, 'pt');
+  const ptResult = await resolveAppleTVForLocale(appleId, isShow, 'pt');
   if (ptResult) return ptResult;
 
-  return await resolveAppleTVForLocale(appleId, isShowWiki, 'us');
+  return await resolveAppleTVForLocale(appleId, isShow, 'us');
 }
 
-// 2. Plex - IVA CDN 1080p
+// 2. Plex - token arranca imediatamente, match espera só pelo TMDB
 async function resolvePlex(imdbId, tmdbMetaPromise) {
   try {
-    const tmdbMeta = await tmdbMetaPromise;
-    const tokenRes = await fetchWithTimeout('https://plex.tv/api/v2/users/anonymous', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'X-Plex-Client-Identifier': 'trailerio-lite',
-        'X-Plex-Product': 'Plex Web',
-        'X-Plex-Version': '4.141.1'
-      }
-    });
+    // Token e TMDB em paralelo — nenhum depende do outro
+    const [tokenRes, tmdbMeta] = await Promise.all([
+      fetchWithTimeout('https://plex.tv/api/v2/users/anonymous', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'X-Plex-Client-Identifier': 'trailerio-lite',
+          'X-Plex-Product': 'Plex Web',
+          'X-Plex-Version': '4.141.1'
+        }
+      }),
+      tmdbMetaPromise
+    ]);
+
     const { authToken } = await tokenRes.json();
     if (!authToken) return null;
 
@@ -337,7 +333,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
       if (trailer.file.includes('theplatform.com') || trailer.file.includes('link.theplatform')) {
         try {
           const smilUrl = trailer.file.split('?')[0] + '?format=SMIL';
-          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, 4000);
+          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, 3000);
           if (smilRes.ok) {
             const best = parseSMIL(await smilRes.text());
             if (best) {
@@ -433,7 +429,7 @@ async function resolveMUBI(wikidataIdsPromise, tmdbMetaPromise) {
   return null;
 }
 
-// 6. IMDb - GraphQL (arranca imediatamente, não precisa de nada)
+// 6. IMDb - GraphQL (arranca imediatamente)
 const IMDB_GQL_HEADERS = {
   'accept': 'application/graphql+json, application/json',
   'content-type': 'application/json',
@@ -489,7 +485,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v43:${imdbId}`;
+  const cacheKey = `trailer:v44:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
@@ -497,10 +493,10 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
   }
 
   // Deferred signals
-  const tmdbReady = deferred();       // resolve com tmdbMeta
-  const wikidataReady = deferred();   // resolve com wikidataIds
+  const tmdbReady = deferred();
+  const wikidataReady = deferred();
 
-  // Pipeline de metadados — corre em paralelo com tudo o resto
+  // Pipeline de metadados em paralelo com tudo o resto
   const metaPipeline = (async () => {
     try {
       const tmdbMeta = await getTMDBMetadata(imdbId, type);
@@ -519,23 +515,21 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
     }
   })();
 
-  // Todas as fontes em paralelo, cada uma espera apenas pelo mínimo necessário
+  // Todas as fontes em paralelo
   const [imdbResult, appleTvResult, plexResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
-      resolveIMDb(imdbId),                                          // arranca imediatamente
-      resolveAppleTV(imdbId, wikidataReady.promise),                // arranca imediatamente se override, senão espera Wikidata
-      resolvePlex(imdbId, tmdbReady.promise),                       // espera só pelo TMDB
-      resolveRottenTomatoes(wikidataReady.promise),                 // espera pelo Wikidata
-      resolveFandango(wikidataReady.promise),                       // espera pelo Wikidata
-      resolveMUBI(wikidataReady.promise, tmdbReady.promise),        // espera por ambos
+      resolveIMDb(imdbId),                                          // imediato
+      resolveAppleTV(imdbId, wikidataReady.promise),                // imediato se override, senão espera Wikidata
+      resolvePlex(imdbId, tmdbReady.promise),                       // token imediato, match espera TMDB
+      resolveRottenTomatoes(wikidataReady.promise),                 // espera Wikidata
+      resolveFandango(wikidataReady.promise),                       // espera Wikidata
+      resolveMUBI(wikidataReady.promise, tmdbReady.promise),        // espera ambos
       metaPipeline
     ]);
 
   const tmdbMeta = metaResult?.tmdbMeta;
 
-  // Quality tier
   const tier = (w, h) => { const m = Math.max(w, h); return m >= 3840 ? 3 : m >= 1900 ? 2 : m >= 1200 ? 1 : 0; };
-
   const overrides = PROVIDER_OVERRIDES[imdbId] || {};
 
   const isExcluded = (r) => {
