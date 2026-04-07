@@ -23,7 +23,6 @@ const CACHE_TTL = 172800; // 48 hours
 const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 
 const PROVIDER_OVERRIDES = {
-  'tt0468569': { 'Plex': 1, 'Rotten Tomatoes': 2 },  // The Dark Knight
   'tt0108052': { 'Rotten Tomatoes': null }             // Schindler's List - RT incorreto
 };
 
@@ -37,6 +36,7 @@ const APPLETV_ID_OVERRIDES = {
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
   'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' }   // Os Mauzões 2
+  'tt0468569': { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' }   // O Cavaleiro das Trevas
 };
 
 // ============== UTILITIES ==============
@@ -472,7 +472,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v46:${imdbId}`;
+  const cacheKey = `trailer:v47:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
