@@ -25,8 +25,8 @@ const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
 
 const PROVIDER_OVERRIDES = {
-  'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT removido (vírgula corrigida)
-  'tt0105695': { 'IMDb': 0 }                         // Unforgiven - IMDb em primeiro (Prioridade 0)
+  'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT removido
+  'tt0105695': { 'IMDb': 0 }                         // Unforgiven - IMDb em primeiro
 };
 
 const APPLETV_LOCALE_OVERRIDES = {
@@ -38,8 +38,8 @@ const APPLETV_ID_OVERRIDES = {
   'tt22022452': { id: 'umc.cmc.1i9m3zsyxnwssydez7vjeax6l', locale: 'pt' },  // Inside Out 2
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
-  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },   // Os Mauzões 2
-  'tt0468569': { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },   // O Cavaleiro das Trevas
+  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },  // Os Mauzões 2
+  'tt0468569':  { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },  // O Cavaleiro das Trevas
 };
 
 // ============== UTILITIES ==============
@@ -50,7 +50,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fetchWithTimeout(url, options = {}, timeout = 3000) {
+async function fetchWithTimeout(url, options = {}, timeout = 2500) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -120,7 +120,7 @@ async function getWikidataIds(wikidataId) {
     const res = await fetchWithTimeout(
       `https://www.wikidata.org/wiki/Special:EntityData/${wikidataId}.json`,
       { headers: { 'Accept': 'application/json', 'User-Agent': 'TrailerioLite/1.0' } },
-      5000
+      4000
     );
     const data = await res.json();
     const entity = data.entities?.[wikidataId];
@@ -176,7 +176,7 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
 
     for (const candidate of candidates.slice(0, 3)) {
       try {
-        const m3u8Res = await fetchWithTimeout(candidate.url, {}, 2500);
+        const m3u8Res = await fetchWithTimeout(candidate.url, {}, 2000);
         const m3u8Text = await m3u8Res.text();
 
         if (candidates.length > 1) {
@@ -327,7 +327,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
       if (trailer.file.includes('theplatform.com') || trailer.file.includes('link.theplatform')) {
         try {
           const smilUrl = trailer.file.split('?')[0] + '?format=SMIL';
-          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, 2500);
+          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, 2000);
           if (smilRes.ok) {
             const best = parseSMIL(await smilRes.text());
             if (best) {
@@ -361,7 +361,7 @@ async function resolveFandango(wikidataIdsPromise) {
       try {
         const jwData = JSON.parse(jwMatch[1]);
         if (jwData.contentURL?.includes('theplatform.com')) {
-          const smilRes = await fetchWithTimeout(jwData.contentURL.split('?')[0] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 2500);
+          const smilRes = await fetchWithTimeout(jwData.contentURL.split('?')[0] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 2000);
           if (smilRes.ok) {
             const best = parseSMIL(await smilRes.text());
             if (best) {
@@ -380,7 +380,7 @@ async function resolveFandango(wikidataIdsPromise) {
 
     const tpMatch = html.match(/(https:\/\/link\.theplatform\.com\/s\/[^"'\s?]+)/);
     if (tpMatch) {
-      const smilRes = await fetchWithTimeout(tpMatch[1] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 2500);
+      const smilRes = await fetchWithTimeout(tpMatch[1] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 2000);
       if (smilRes.ok) {
         const best = parseSMIL(await smilRes.text());
         if (best) {
@@ -475,7 +475,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v63:${imdbId}`;
+  const cacheKey = `trailer:v64:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
@@ -526,20 +526,20 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
   };
 
   const providerOrder = (r) => {
-    // 1. PRIORIDADE MÁXIMA: Verifica se existe um override numérico para este ID
+    // Overrides manuais têm prioridade máxima
     for (const [name, order] of Object.entries(overrides)) {
-      if (r.provider.includes(name) && order !== null) {
-        return order; 
-      }
+      if (r.provider.includes(name) && order !== null) return order;
     }
-
-    // 2. REGRAS PADRÃO (Valores altos para não colidir com o "0" do override)
+    // Ordem padrão
     if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
     if (r.provider.includes('Apple TV')) return 11;
     const t = tier(r.width, r.height);
-    if (t === 3) return 12; // 4K
-    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13;
-    return 14 + (3 - t);
+    if (t === 3) return 12;                                          // 4K qualquer fonte
+    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13; // RT 1080p
+    if (r.provider.includes('IMDb')) return 14;                     // IMDb acima de Plex e MUBI
+    if (r.provider.includes('Plex')) return 15;                     // Plex
+    if (r.provider.includes('MUBI')) return 16;                     // MUBI
+    return 17 + (3 - t);                                            // resto
   };
 
   const seen = new Set();
