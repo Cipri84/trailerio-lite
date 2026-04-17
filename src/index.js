@@ -1,10 +1,10 @@
-// Trailerio Lite - Cloudflare Workers Edition (Optimized v56)
+// Trailerio Lite - Cloudflare Workers Edition (Base Plex Estável v57)
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
   version: '1.2.0',
   name: 'Trailerio',
-  description: 'Trailer addon - Fandango, Apple TV, Rotten Tomatoes, MUBI, IMDb',
+  description: 'Trailer addon - Fandango, Apple TV, Rotten Tomatoes, MUBI, IMDb, Plex',
   logo: 'https://raw.githubusercontent.com/9mousaa/trailerio-lite/main/icon.png',
   resources: [{ name: 'meta', types: ['movie', 'series'], idPrefixes: ['tt'] }],
   types: ['movie', 'series'],
@@ -12,14 +12,14 @@ const MANIFEST = {
   catalogs: []
 };
 
-const CACHE_TTL = 172800; // 48 hours
+const CACHE_TTL = 172800; // 48 horas
 const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
 
 const PROVIDER_OVERRIDES = {
-  'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT incorreto ou indisponível
-  'tt0105695': { 'IMDb': 0 }                         // Unforgiven - IMDb em primeiro (Prioridade 0)
+  'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT indisponível
+  'tt0105695': { 'IMDb': 0 }                         // Unforgiven - IMDb em primeiro
 };
 
 const APPLETV_LOCALE_OVERRIDES = { 
@@ -31,13 +31,13 @@ const APPLETV_ID_OVERRIDES = {
   'tt22022452': { id: 'umc.cmc.1i9m3zsyxnwssydez7vjeax6l', locale: 'pt' },  // Inside Out 2
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
-  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },   // Os Mauzões 2
+  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },  // Os Mauzões 2
   'tt0468569': { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },   // O Cavaleiro das Trevas
 };
 
 // ============== UTILITIES ==============
 
-async function fetchWithTimeout(url, options = {}, timeout = 4000) {
+async function fetchWithTimeout(url, options = {}, timeout = 2500) { // Timeout otimizado para 2.5s
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -62,113 +62,57 @@ function parseSMIL(smilXml) {
 
 async function resolveIMDb(imdbId) {
   try {
-    const headers = { 
-      'content-type': 'application/json', 
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'origin': 'https://www.imdb.com',
-      'referer': 'https://www.imdb.com/',
-      'x-imdb-client-name': 'imdb-web-next-localized'
-    };
-    
-    // Passo 1: Obter o ID do vídeo principal
-    const g1 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { 
-      method: 'POST', 
-      headers, 
-      body: JSON.stringify({
-        query: `query GetMainVideo($id: ID!) { title(id: $id) { primaryVideos(first: 1) { edges { node { id } } } } }`,
-        variables: { id: imdbId }
-      }) 
-    });
-    
-    const vidId = (await g1.json())?.data?.title?.primaryVideos?.edges[0]?.node?.id;
+    const headers = { 'content-type': 'application/json', 'user-agent': 'Mozilla/5.0' };
+    const g1 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { method: 'POST', headers, body: JSON.stringify({ query: `query Q($c:ID!){title(id:$c){primaryVideos(first:1){edges{node{id}}}}}`, variables: { c: imdbId }}) });
+    const vidId = (await g1.json()).data?.title?.primaryVideos?.edges[0]?.node?.id;
     if (!vidId) return null;
-
-    // Passo 2: Obter as URLs de playback para esse vídeo
-    const g2 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { 
-      method: 'POST', 
-      headers, 
-      body: JSON.stringify({
-        query: `query GetPlayback($id: ID!) { video(id: $id) { playbackURLs { displayName { value } url videoMimeType } } }`,
-        variables: { id: vidId }
-      }) 
-    });
-
-    const urls = (await g2.json())?.data?.video?.playbackURLs?.filter(u => u.videoMimeType?.includes('mp4')) || [];
-    if (!urls.length) return null;
-
-    // Priorizar 1080p, senão pegar o primeiro disponível
-    const best = urls.find(u => u.displayName?.value?.includes('1080p')) || urls[0];
-    
-    return { 
-      url: best.url, 
-      provider: `IMDb ${best.displayName?.value || 'Video'}`, 
-      height: 1080 
-    };
-  } catch (e) {
-    console.error("IMDb Error:", e);
-    return null;
-  }
-}
-
-async function getTMDBMetadata(imdbId, type = 'movie') {
-  try {
-    const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
-    const findData = await findRes.json();
-    let results = type === 'series' ? findData.tv_results : findData.movie_results;
-    if (!results?.length) results = findData.movie_results || findData.tv_results;
-    if (!results?.length) return null;
-    const item = results[0];
-    const extRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${item.title ? 'movie' : 'tv'}/${item.id}/external_ids?api_key=${TMDB_API_KEY}`);
-    const extData = await extRes.json();
-    return { tmdbId: item.id, title: item.title || item.name, wikidataId: extData.wikidata_id };
+    const g2 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { method: 'POST', headers, body: JSON.stringify({ query: `query Q($c:ID!){video(id:$c){playbackURLs{displayName{value}url videoMimeType}}}`, variables: { c: vidId }}) });
+    const urls = (await g2.json()).data?.video?.playbackURLs?.filter(u => u.videoMimeType.includes('mp4'));
+    const best = urls.find(u => u.displayName.value.includes('1080p')) || urls[0];
+    return { url: best.url, provider: `IMDb ${best.displayName.value}`, height: 1080 };
   } catch (e) { return null; }
 }
 
-async function getWikidataIds(wikidataId) {
-  if (!wikidataId) return {};
+async function resolvePlex(imdbId) {
   try {
-    const res = await fetchWithTimeout(`https://www.wikidata.org/wiki/Special:EntityData/${wikidataId}.json`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    const data = await res.json();
-    const entity = data.entities?.[wikidataId];
-    return {
-      appleTvId: entity?.claims?.P9586?.[0]?.mainsnak?.datavalue?.value || entity?.claims?.P9751?.[0]?.mainsnak?.datavalue?.value,
-      isAppleTvShow: !!entity?.claims?.P9751?.[0]?.mainsnak?.datavalue?.value,
-      rtSlug: entity?.claims?.P1258?.[0]?.mainsnak?.datavalue?.value,
-      fandangoId: entity?.claims?.P5693?.[0]?.mainsnak?.datavalue?.value,
-      mubiId: entity?.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
-    };
-  } catch (e) { return {}; }
-}
-
-async function resolveAppleTVForLocale(appleId, isShow, locale) {
-  try {
-    const pageRes = await fetchWithTimeout(`https://tv.apple.com/${locale}/${isShow ? 'show' : 'movie'}/${appleId}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    const html = await pageRes.text();
-    const hls = html.match(/https:\/\/play[^"]*\.m3u8[^"]*/)?.[0].replace(/&amp;/g, '&');
-    return hls ? { url: hls, provider: 'Apple TV', height: 2160, locale } : null;
+    const login = await fetchWithTimeout('https://users.plex.tv/users/sign_in.json', { method: 'POST', headers: { 'X-Plex-Client-Identifier': 'trailerio' } });
+    const token = (await login.json()).user?.authToken;
+    const search = await fetchWithTimeout(`https://metadata.provider.plex.tv/library/metadata/matches?guid=com.plexapp.agents.imdb%3A%2F%2F${imdbId}%3Flang%3Den&X-Plex-Token=${token}`);
+    const ratingKey = (await search.text()).match(/ratingKey="(\d+)"/)?.[1];
+    if (!ratingKey) return null;
+    const meta = await fetchWithTimeout(`https://metadata.provider.plex.tv/library/metadata/${ratingKey}?X-Plex-Token=${token}`);
+    const video = (await meta.text()).match(/<Video[^>]+url="(https:[^"]+)"[^>]+subtype="trailer"/);
+    return video ? { url: video[1], provider: 'Plex 1080p', height: 1080 } : null;
   } catch (e) { return null; }
 }
 
 async function resolveAppleTV(imdbId, wikidataPromise) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
-  if (idOverride) return await resolveAppleTVForLocale(idOverride.id, false, idOverride.locale);
   const w = await wikidataPromise;
-  if (!w?.appleTvId) return null;
-  const pt = await resolveAppleTVForLocale(w.appleTvId, w.isAppleTvShow, 'pt');
-  return pt || await resolveAppleTVForLocale(w.appleTvId, w.isAppleTvShow, 'us');
+  const appleId = idOverride?.id || w?.appleTvId;
+  if (!appleId) return null;
+
+  const resolveLocale = async (loc) => {
+    try {
+      const res = await fetchWithTimeout(`https://tv.apple.com/${loc}/movie/${appleId}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const hls = (await res.text()).match(/https:\/\/play[^"]*\.m3u8[^"]*/)?.[0].replace(/&amp;/g, '&');
+      return hls ? { url: hls, provider: 'Apple TV', height: 2160, locale: loc } : null;
+    } catch { return null; }
+  };
+  return (await resolveLocale(idOverride?.locale || 'pt')) || (await resolveLocale('us'));
 }
 
 async function resolveRottenTomatoes(wikidataPromise) {
   try {
     const w = await wikidataPromise;
     if (!w?.rtSlug) return null;
-    const pageRes = await fetchWithTimeout(`https://www.rottentomatoes.com/${w.rtSlug.startsWith('tv/') ? 'tv' : 'm'}/${w.rtSlug.replace(/^(m|tv)\//, '')}/videos`);
-    const scriptMatch = (await pageRes.text()).match(/<script\s+id="videos"[^>]*>([\s\S]*?)<\/script>/i);
-    const trailer = JSON.parse(scriptMatch[1]).find(v => v.videoType === 'TRAILER' && v.file?.includes('theplatform'));
-    const smilRes = await fetchWithTimeout(trailer.file.split('?')[0] + '?format=SMIL');
-    const best = parseSMIL(await smilRes.text());
+    const res = await fetchWithTimeout(`https://www.rottentomatoes.com/${w.rtSlug}/videos`);
+    const match = (await res.text()).match(/<script\s+id="videos"[^>]*>([\s\S]*?)<\/script>/i);
+    const trailer = JSON.parse(match[1]).find(v => v.videoType === 'TRAILER' && v.file?.includes('theplatform'));
+    const smil = await fetchWithTimeout(trailer.file.split('?')[0] + '?format=SMIL');
+    const best = parseSMIL(await smil.text());
     return best ? { url: best.url, provider: `Rotten Tomatoes ${best.height}p`, height: best.height } : null;
-  } catch (e) { return null; }
+  } catch { return null; }
 }
 
 async function resolveFandango(wikidataPromise) {
@@ -176,70 +120,83 @@ async function resolveFandango(wikidataPromise) {
     const w = await wikidataPromise;
     if (!w?.fandangoId) return null;
     const res = await fetchWithTimeout(`https://www.fandango.com/x-${w.fandangoId}/movie-overview`);
-    const tpMatch = (await res.text()).match(/(https:\/\/link\.theplatform\.com\/s\/[^"'\s?]+)/);
-    const smilRes = await fetchWithTimeout(tpMatch[1] + '?format=SMIL&formats=mpeg4');
-    const best = parseSMIL(await smilRes.text());
+    const tp = (await res.text()).match(/(https:\/\/link\.theplatform\.com\/s\/[^"'\s?]+)/);
+    const smil = await fetchWithTimeout(tp[1] + '?format=SMIL&formats=mpeg4');
+    const best = parseSMIL(await smil.text());
     return best ? { url: best.url, provider: `Fandango ${best.height}p`, height: best.height } : null;
-  } catch (e) { return null; }
+  } catch { return null; }
 }
 
-async function resolveMUBI(wikidataPromise, tmdbPromise) {
+async function resolveMUBI(wikidataPromise, title) {
   try {
-    const [w, t] = await Promise.all([wikidataPromise, tmdbPromise]);
-    if (!w?.mubiId || !t?.title) return null;
-    const res = await fetchWithTimeout(`https://mubi.com/en/us/films/${t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
-    const match = (await res.text()).match(/https:\/\/trailers\.mubicdn\.net\/[^"']+\.mp4/);
-    return match ? { url: match[0], provider: 'MUBI 1080p', height: 1080 } : null;
-  } catch (e) { return null; }
+    const w = await wikidataPromise;
+    if (!w?.mubiId) return null;
+    const res = await fetchWithTimeout(`https://mubi.com/en/us/films/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
+    const url = (await res.text()).match(/https:\/\/trailers\.mubicdn\.net\/[^"']+\.mp4/);
+    return url ? { url: url[0], provider: 'MUBI 1080p', height: 1080 } : null;
+  } catch { return null; }
 }
 
-async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v56:${imdbId}`; // Mudança para v56
-  if (!fresh) {
-    const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
-    if (cached) return await cached.json();
-  }
-  const tmdbMetaPromise = getTMDBMetadata(imdbId, type);
-  const wikidataPromise = tmdbMetaPromise.then(m => getWikidataIds(m?.wikidataId));
+// ============== MAIN ==============
+
+async function resolveTrailers(imdbId, type, cache) {
+  const cacheKey = `trailer:v57:${imdbId}`;
+  const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
+  if (cached) return await cached.json();
+
+  const findRes = await fetchWithTimeout(`https://api.themoviedb.org/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`);
+  const tmdb = (await findRes.json()).movie_results?.[0] || (await findRes.json()).tv_results?.[0];
   
-  const [imdb, apple, rt, fandango, mubi, tmdb] = await Promise.all([
-    resolveIMDb(imdbId), resolveAppleTV(imdbId, wikidataPromise),
+  const wikidataPromise = tmdb ? fetchWithTimeout(`https://api.themoviedb.org/3/${tmdb.title ? 'movie' : 'tv'}/${tmdb.id}/external_ids?api_key=${TMDB_API_KEY}`)
+    .then(r => r.json())
+    .then(ext => fetchWithTimeout(`https://www.wikidata.org/wiki/Special:EntityData/${ext.wikidata_id}.json`, { headers: { 'User-Agent': 'Mozilla/5.0' } }))
+    .then(r => r.json())
+    .then(d => {
+      const e = Object.values(d.entities)[0];
+      return {
+        appleTvId: e.claims?.P9586?.[0]?.mainsnak?.datavalue?.value || e.claims?.P9751?.[0]?.mainsnak?.datavalue?.value,
+        rtSlug: e.claims?.P1258?.[0]?.mainsnak?.datavalue?.value,
+        fandangoId: e.claims?.P5693?.[0]?.mainsnak?.datavalue?.value,
+        mubiId: e.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
+      };
+    }) : Promise.resolve({});
+
+  const [imdb, plex, apple, rt, fandango, mubi] = await Promise.all([
+    resolveIMDb(imdbId), resolvePlex(imdbId), resolveAppleTV(imdbId, wikidataPromise),
     resolveRottenTomatoes(wikidataPromise), resolveFandango(wikidataPromise),
-    resolveMUBI(wikidataPromise, tmdbMetaPromise), tmdbMetaPromise
+    resolveMUBI(wikidataPromise, tmdb?.title || tmdb?.name || '')
   ]);
-  
+
   const overrides = PROVIDER_OVERRIDES[imdbId] || {};
-  const providerOrder = (r) => {
-    for (const [name, order] of Object.entries(overrides)) { 
-      if (r.provider.includes(name) && order !== null) return order; 
-    }
+  const order = (r) => {
+    for (const [n, o] of Object.entries(overrides)) { if (r.provider.includes(n) && o !== null) return o; }
     if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
     if (r.provider.includes('Apple TV')) return 11;
     if (r.provider.includes('IMDb')) return 12;
-    if (r.provider.includes('MUBI')) return 13;
-    return 14 + (2160 - r.height);
+    if (r.provider.includes('Plex')) return 13;
+    if (r.provider.includes('MUBI')) return 14;
+    return 15 + (2160 - r.height);
   };
 
-  const links = [imdb, apple, rt, fandango, mubi]
+  const links = [imdb, plex, apple, rt, fandango, mubi]
     .filter(r => r && !(overrides[Object.keys(overrides).find(k => r.provider.includes(k))] === null))
-    .sort((a, b) => providerOrder(a) - providerOrder(b))
+    .sort((a, b) => order(a) - order(b))
     .map((r, i) => ({ trailers: r.url, provider: i === 0 ? `⭐ ${r.provider}` : r.provider }));
 
-  const result = { title: tmdb?.title || imdbId, links };
-  if (links.length) await cache.put(new Request(`https://cache/${cacheKey}`), new Response(JSON.stringify(result), { headers: { 'Cache-Control': `max-age=${CACHE_TTL}` } }));
-  return result;
+  const res = { title: tmdb?.title || tmdb?.name || imdbId, links };
+  if (links.length) await cache.put(new Request(`https://cache/${cacheKey}`), new Response(JSON.stringify(res), { headers: { 'Cache-Control': `max-age=${CACHE_TTL}` } }));
+  return res;
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     const url = new URL(request.url);
     const cors = { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' };
     if (url.pathname === '/manifest.json') return new Response(JSON.stringify(MANIFEST), { headers: cors });
-    const metaMatch = url.pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
-    if (metaMatch) {
-      const imdbId = metaMatch[2].split(':')[0];
-      const result = await resolveTrailers(imdbId, metaMatch[1], caches.default, url.searchParams.has('fresh'));
-      return new Response(JSON.stringify({ meta: { id: imdbId, type: metaMatch[1], name: result.title, links: result.links } }), { headers: cors });
+    const match = url.pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
+    if (match) {
+      const res = await resolveTrailers(match[2].split(':')[0], match[1], caches.default);
+      return new Response(JSON.stringify({ meta: { id: match[2], type: match[1], name: res.title, links: res.links } }), { headers: cors });
     }
     return new Response(null, { status: 404 });
   }
