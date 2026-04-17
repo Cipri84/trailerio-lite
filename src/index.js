@@ -23,7 +23,7 @@ const CACHE_TTL = 172800; // 48 hours
 const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 
 const PROVIDER_OVERRIDES = {
-  'tt0108052': { 'Rotten Tomatoes': null }             // Schindler's List - RT incorreto
+  'tt0108052': { 'Rotten Tomatoes': null },             // Schindler's List - RT incorreto
   'tt0105695': { 'IMDb': 0 }                        // Unforgiven - IMDb em primeiro
 };
 
@@ -473,7 +473,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v51:${imdbId}`;
+  const cacheKey = `trailer:v52:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
