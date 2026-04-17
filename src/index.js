@@ -1,4 +1,4 @@
-// Trailerio Lite - Cloudflare Workers Edition (Optimized v55)
+// Trailerio Lite - Cloudflare Workers Edition (Optimized v56)
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
@@ -37,7 +37,7 @@ const APPLETV_ID_OVERRIDES = {
 
 // ============== UTILITIES ==============
 
-async function fetchWithTimeout(url, options = {}, timeout = 3000) {
+async function fetchWithTimeout(url, options = {}, timeout = 4000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -58,7 +58,57 @@ function parseSMIL(smilXml) {
   return videos.sort((a, b) => b.bitrate - a.bitrate)[0];
 }
 
-// ============== METADATA ==============
+// ============== RESOLVERS ==============
+
+async function resolveIMDb(imdbId) {
+  try {
+    const headers = { 
+      'content-type': 'application/json', 
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'origin': 'https://www.imdb.com',
+      'referer': 'https://www.imdb.com/',
+      'x-imdb-client-name': 'imdb-web-next-localized'
+    };
+    
+    // Passo 1: Obter o ID do vídeo principal
+    const g1 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { 
+      method: 'POST', 
+      headers, 
+      body: JSON.stringify({
+        query: `query GetMainVideo($id: ID!) { title(id: $id) { primaryVideos(first: 1) { edges { node { id } } } } }`,
+        variables: { id: imdbId }
+      }) 
+    });
+    
+    const vidId = (await g1.json())?.data?.title?.primaryVideos?.edges[0]?.node?.id;
+    if (!vidId) return null;
+
+    // Passo 2: Obter as URLs de playback para esse vídeo
+    const g2 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { 
+      method: 'POST', 
+      headers, 
+      body: JSON.stringify({
+        query: `query GetPlayback($id: ID!) { video(id: $id) { playbackURLs { displayName { value } url videoMimeType } } }`,
+        variables: { id: vidId }
+      }) 
+    });
+
+    const urls = (await g2.json())?.data?.video?.playbackURLs?.filter(u => u.videoMimeType?.includes('mp4')) || [];
+    if (!urls.length) return null;
+
+    // Priorizar 1080p, senão pegar o primeiro disponível
+    const best = urls.find(u => u.displayName?.value?.includes('1080p')) || urls[0];
+    
+    return { 
+      url: best.url, 
+      provider: `IMDb ${best.displayName?.value || 'Video'}`, 
+      height: 1080 
+    };
+  } catch (e) {
+    console.error("IMDb Error:", e);
+    return null;
+  }
+}
 
 async function getTMDBMetadata(imdbId, type = 'movie') {
   try {
@@ -70,7 +120,7 @@ async function getTMDBMetadata(imdbId, type = 'movie') {
     const item = results[0];
     const extRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${item.title ? 'movie' : 'tv'}/${item.id}/external_ids?api_key=${TMDB_API_KEY}`);
     const extData = await extRes.json();
-    return { tmdbId: item.id, title: item.title || item.name, wikidataId: extData.wikidata_id, actualType: item.title ? 'movie' : 'series' };
+    return { tmdbId: item.id, title: item.title || item.name, wikidataId: extData.wikidata_id };
   } catch (e) { return null; }
 }
 
@@ -88,28 +138,6 @@ async function getWikidataIds(wikidataId) {
       mubiId: entity?.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
     };
   } catch (e) { return {}; }
-}
-
-// ============== RESOLVERS ==============
-
-async function resolveIMDb(imdbId) {
-  try {
-    const headers = { 
-      'content-type': 'application/json', 
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'x-imdb-client-name': 'imdb-web-next-localized'
-    };
-    const query1 = { query: `query Q($c:ID!){title(id:$c){primaryVideos(first:5){edges{node{id contentType{displayName{value}}}}}}}`, variables: { c: imdbId } };
-    const g1 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { method: 'POST', headers, body: JSON.stringify(query1) });
-    const edges = (await g1.json()).data?.title?.primaryVideos?.edges || [];
-    const vidId = edges.find(e => /trailer/i.test(e.node?.contentType?.displayName?.value))?.node?.id || edges[0]?.node?.id;
-    if (!vidId) return null;
-    const query2 = { query: `query Q($c:ID!){video(id:$c){playbackURLs{displayName{value}url videoMimeType}}}`, variables: { c: vidId } };
-    const g2 = await fetchWithTimeout('https://caching.graphql.imdb.com/', { method: 'POST', headers, body: JSON.stringify(query2) });
-    const urls = (await g2.json()).data?.video?.playbackURLs?.filter(u => u.videoMimeType?.includes('mp4')) || [];
-    const best = urls.find(u => u.displayName.value.includes('1080p')) || urls[0];
-    return best ? { url: best.url, provider: `IMDb ${best.displayName.value}`, height: 1080 } : null;
-  } catch (e) { return null; }
 }
 
 async function resolveAppleTVForLocale(appleId, isShow, locale) {
@@ -165,16 +193,15 @@ async function resolveMUBI(wikidataPromise, tmdbPromise) {
   } catch (e) { return null; }
 }
 
-// ============== MAIN ==============
-
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v55:${imdbId}`; // Versão v55 para nova cache
+  const cacheKey = `trailer:v56:${imdbId}`; // Mudança para v56
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
     if (cached) return await cached.json();
   }
   const tmdbMetaPromise = getTMDBMetadata(imdbId, type);
   const wikidataPromise = tmdbMetaPromise.then(m => getWikidataIds(m?.wikidataId));
+  
   const [imdb, apple, rt, fandango, mubi, tmdb] = await Promise.all([
     resolveIMDb(imdbId), resolveAppleTV(imdbId, wikidataPromise),
     resolveRottenTomatoes(wikidataPromise), resolveFandango(wikidataPromise),
@@ -188,7 +215,7 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
     }
     if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
     if (r.provider.includes('Apple TV')) return 11;
-    if (r.provider.includes('IMDb')) return 12; // IMDb acima do MUBI
+    if (r.provider.includes('IMDb')) return 12;
     if (r.provider.includes('MUBI')) return 13;
     return 14 + (2160 - r.height);
   };
