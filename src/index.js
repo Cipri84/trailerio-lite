@@ -22,9 +22,11 @@ const MANIFEST = {
 const CACHE_TTL = 172800; // 48 hours
 const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 
+// ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
+
 const PROVIDER_OVERRIDES = {
-  'tt0108052': { 'Rotten Tomatoes': null },             // Schindler's List - RT incorreto
-  'tt0105695': { 'IMDb': 0 }                        // Unforgiven - IMDb em primeiro
+  'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT removido (vírgula corrigida)
+  'tt0105695': { 'IMDb': 0 }                         // Unforgiven - IMDb em primeiro (Prioridade 0)
 };
 
 const APPLETV_LOCALE_OVERRIDES = {
@@ -473,7 +475,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, cache, fresh = false) {
-  const cacheKey = `trailer:v52:${imdbId}`;
+  const cacheKey = `trailer:v53:${imdbId}`;
 
   if (!fresh) {
     const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
@@ -524,15 +526,20 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
   };
 
   const providerOrder = (r) => {
+    // 1. PRIORIDADE MÁXIMA: Verifica se existe um override numérico para este ID
     for (const [name, order] of Object.entries(overrides)) {
-      if (r.provider.includes(name) && order !== null) return order;
+      if (r.provider.includes(name) && order !== null) {
+        return order; 
+      }
     }
-    if (r.provider.includes('Apple TV') && r.locale === 'pt') return 0;
-    if (r.provider.includes('Apple TV')) return 1;
+
+    // 2. REGRAS PADRÃO (Valores altos para não colidir com o "0" do override)
+    if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
+    if (r.provider.includes('Apple TV')) return 11;
     const t = tier(r.width, r.height);
-    if (t === 3) return 2;
-    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 3;
-    return 4 + (3 - t);
+    if (t === 3) return 12; // 4K
+    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13;
+    return 14 + (3 - t);
   };
 
   const seen = new Set();
