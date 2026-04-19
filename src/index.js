@@ -427,13 +427,12 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey = `trailer:v70:${imdbId}`;
+  const cacheKey = `trailer:v80:${imdbId}`;
 
-  // 1. Tenta ir buscar ao KV (Persistente)
+  // 1. Tenta ir buscar ao KV primeiro e devolve IMEDIATAMENTE se encontrar
   if (!fresh && env.KV) {
     const cached = await env.KV.get(cacheKey);
     if (cached) {
-      console.log(`KV Hit: ${imdbId}`);
       return JSON.parse(cached);
     }
   }
