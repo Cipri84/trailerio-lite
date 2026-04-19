@@ -1,5 +1,5 @@
 // Trailerio Lite - Cloudflare Workers Edition
-// Zero storage, edge-deployed trailer resolver for Fusion
+// KV storage, edge-deployed trailer resolver for Fusion
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
@@ -19,7 +19,7 @@ const MANIFEST = {
   catalogs: []
 };
 
-const CACHE_TTL = 172800; // 48 hours
+const CACHE_TTL = 172800; // 48 horas (usado no KV)
 const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
@@ -38,7 +38,7 @@ const APPLETV_ID_OVERRIDES = {
   'tt22022452': { id: 'umc.cmc.1i9m3zsyxnwssydez7vjeax6l', locale: 'pt' },  // Inside Out 2
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
-  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },  // Os Mauzões 2
+  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4bd1d', locale: 'pt' },  // Os Mauzões 2
   'tt0468569':  { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },  // O Cavaleiro das Trevas
 };
 
@@ -426,12 +426,16 @@ async function resolveIMDb(imdbId) {
 
 // ============== MAIN RESOLVER ==============
 
-async function resolveTrailers(imdbId, type, cache, fresh = false) {
+async function resolveTrailers(imdbId, type, env, fresh = false) {
   const cacheKey = `trailer:v65:${imdbId}`;
 
-  if (!fresh) {
-    const cached = await cache.match(new Request(`https://cache/${cacheKey}`));
-    if (cached) return await cached.json();
+  // 1. Tenta ir buscar ao KV (Persistente)
+  if (!fresh && env.KV) {
+    const cached = await env.KV.get(cacheKey);
+    if (cached) {
+      console.log(`KV Hit: ${imdbId}`);
+      return JSON.parse(cached);
+    }
   }
 
   const tmdbReady = deferred();
@@ -455,7 +459,6 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
     }
   })();
 
-  // Plex removido
   const [imdbResult, appleTvResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
       resolveIMDb(imdbId),
@@ -511,11 +514,9 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
     links: links
   };
 
-  if (links.length > 0) {
-    const response = new Response(JSON.stringify(result), {
-      headers: { 'Cache-Control': `max-age=${CACHE_TTL}` }
-    });
-    await cache.put(new Request(`https://cache/${cacheKey}`), response.clone());
+  // 2. Guarda no KV para a próxima vez
+  if (links.length > 0 && env.KV) {
+    await env.KV.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL });
   }
 
   return result;
@@ -526,7 +527,6 @@ async function resolveTrailers(imdbId, type, cache, fresh = false) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const cache = caches.default;
 
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
@@ -544,7 +544,7 @@ export default {
     }
 
     if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', edge: request.cf?.colo }), { headers: corsHeaders });
+      return new Response(JSON.stringify({ status: 'ok', edge: request.cf?.colo, hasKV: !!env.KV }), { headers: corsHeaders });
     }
 
     const metaMatch = url.pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
@@ -553,7 +553,8 @@ export default {
       const imdbId = id.split(':')[0];
       const fresh = url.searchParams.has('fresh');
 
-      const result = await resolveTrailers(imdbId, type, cache, fresh);
+      // Passamos o 'env' que contém a ligação ao KV
+      const result = await resolveTrailers(imdbId, type, env, fresh);
 
       return new Response(JSON.stringify({
         meta: {
