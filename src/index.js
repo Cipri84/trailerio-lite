@@ -427,7 +427,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey = `trailer:v80:${imdbId}`;
+  const cacheKey = `trailer:v81:${imdbId}`;
 
   // 1. Tenta ir buscar ao KV primeiro e devolve IMEDIATAMENTE se encontrar
   if (!fresh && env.KV) {
@@ -539,11 +539,21 @@ export default {
     }
 
     if (url.pathname === '/manifest.json') {
-      return new Response(JSON.stringify(MANIFEST), { headers: corsHeaders });
+      return new Response(JSON.stringify(MANIFEST), {
+        headers: {
+          ...corsHeaders,
+          'Cache-Control': 'public, max-age=3600'
+        }
+      });
     }
 
     if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', edge: request.cf?.colo, hasKV: !!env.KV }), { headers: corsHeaders });
+      return new Response(JSON.stringify({ status: 'ok', edge: request.cf?.colo, hasKV: !!env.KV }), {
+        headers: {
+          ...corsHeaders,
+          'Cache-Control': 'public, max-age=300'
+        }
+      });
     }
 
     const metaMatch = url.pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
@@ -552,7 +562,6 @@ export default {
       const imdbId = id.split(':')[0];
       const fresh = url.searchParams.has('fresh');
 
-      // Passamos o 'env' que contém a ligação ao KV
       const result = await resolveTrailers(imdbId, type, env, fresh);
 
       return new Response(JSON.stringify({
@@ -562,7 +571,12 @@ export default {
           name: result.title,
           links: result.links
         }
-      }), { headers: corsHeaders });
+      }), {
+        headers: {
+          ...corsHeaders,
+          'Cache-Control': 'public, max-age=172800, stale-while-revalidate=86400'
+        }
+      });
     }
 
     return new Response(JSON.stringify({ error: 'Not found' }), {
