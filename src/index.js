@@ -426,7 +426,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey = `trailer:v82:${imdbId}`;
+  const cacheKey = `trailer:v83:${imdbId}`;
 
   // 1. Tenta ir buscar ao KV primeiro e devolve IMEDIATAMENTE se encontrar
   if (!fresh && env.KV) {
