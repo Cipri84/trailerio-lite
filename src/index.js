@@ -40,6 +40,7 @@ const APPLETV_ID_OVERRIDES = {
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
   'tt0468569':  { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },  // O Cavaleiro das Trevas
+  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },  // The Bad Guys 2
 };
 
 // ============== UTILITIES ==============
@@ -458,7 +459,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v85:${imdbId}`;
+  const cacheKey     = `trailer:v86:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
