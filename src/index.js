@@ -19,8 +19,9 @@ const MANIFEST = {
   catalogs: []
 };
 
-const CACHE_TTL = 172800; // 48 horas (usado no KV)
-const TMDB_API_KEY = 'bfe73358661a995b992ae9a812aa0d2f';
+const CACHE_TTL      = 172800;  // 48 horas — trailers
+const META_CACHE_TTL = 604800;  // 7 dias  — metadados (título + IDs Wikidata)
+const TMDB_API_KEY   = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
 
@@ -275,6 +276,8 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
 
     for (const trailer of videos) {
       if (!trailer.file) continue;
+
+      // Caso 1: theplatform (via SMIL)
       if (trailer.file.includes('theplatform.com') || trailer.file.includes('link.theplatform')) {
         try {
           const smilUrl = trailer.file.split('?')[0] + '?format=SMIL';
@@ -286,6 +289,34 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
               return { url: best.url, provider: `Rotten Tomatoes ${quality}`, bitrate: best.bitrate || 5000, width: best.width, height: best.height };
             }
           }
+        } catch (e) { /* try next */ }
+        continue;
+      }
+
+      // Caso 2: URL direto mp4
+      if (/\.mp4(\?|$)/i.test(trailer.file)) {
+        const heightMatch = (trailer.title || '').match(/(\d{3,4})p/i);
+        const height = heightMatch ? parseInt(heightMatch[1]) : 1080;
+        const width = Math.round(height * 16 / 9);
+        const quality = height >= 1080 ? '1080p' : `${height}p`;
+        return { url: trailer.file, provider: `Rotten Tomatoes ${quality}`, bitrate: 5000, width, height };
+      }
+
+      // Caso 3: HLS/m3u8 direto (Akamai, CloudFront, Anvato, etc.)
+      if (/\.m3u8(\?|$)/i.test(trailer.file) || trailer.file.includes('akamai') || trailer.file.includes('cloudfront') || trailer.file.includes('fwmrm') || trailer.file.includes('anvato')) {
+        try {
+          const m3u8Res = await fetchWithTimeout(trailer.file, {}, 1500);
+          if (!m3u8Res.ok) continue;
+          const m3u8Text = await m3u8Res.text();
+          const streamMatches = [...m3u8Text.matchAll(/#EXT-X-STREAM-INF:.*?BANDWIDTH=(\d+)(?:.*?RESOLUTION=(\d+)x(\d+))?/g)];
+          if (streamMatches.length > 0) {
+            streamMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
+            const width = streamMatches[0][2] ? parseInt(streamMatches[0][2]) : 1920;
+            const height = streamMatches[0][3] ? parseInt(streamMatches[0][3]) : 1080;
+            const quality = height >= 1080 ? '1080p' : `${height}p`;
+            return { url: trailer.file, provider: `Rotten Tomatoes ${quality}`, bitrate: Math.round(parseInt(streamMatches[0][1]) / 1000), width, height };
+          }
+          return { url: trailer.file, provider: 'Rotten Tomatoes 1080p', bitrate: 5000, width: 1920, height: 1080 };
         } catch (e) { /* try next */ }
       }
     }
@@ -354,6 +385,7 @@ async function resolveMUBI(wikidataIdsPromise, tmdbMetaPromise) {
     if (!title) return null;
 
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
     const pageRes = await fetchWithTimeout(
       `https://mubi.com/en/us/films/${slug}`,
       { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }
@@ -426,33 +458,57 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey = `trailer:v83:${imdbId}`;
+  const cacheKey     = `trailer:v83:${imdbId}`;
+  const metaCacheKey = `meta:v1:${imdbId}`;
 
-  // 1. Tenta ir buscar ao KV primeiro e devolve IMEDIATAMENTE se encontrar
+  // 1. Cache completo de trailer — devolve imediatamente
   if (!fresh && env.KV) {
     const cached = await env.KV.get(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
-    }
+    if (cached) return JSON.parse(cached);
   }
 
-  const tmdbReady = deferred();
+  const tmdbReady     = deferred();
   const wikidataReady = deferred();
 
+  // 2. Cache de metadados — se existir, resolve wikidataReady imediatamente
+  //    e todos os resolvers arrancam em paralelo sem esperar TMDB+Wikidata
+  const cachedMeta = env.KV && !fresh ? await env.KV.get(metaCacheKey) : null;
+
+  if (cachedMeta) {
+    const { title, wikidataIds } = JSON.parse(cachedMeta);
+    tmdbReady.resolve({ title, wikidataId: null, imdbId, actualType: type });
+    wikidataReady.resolve(wikidataIds);
+  }
+
+  // 3. Pipeline de metadados — corre sempre para refrescar o cache de meta
+  //    mas só bloqueia os resolvers se não havia cache
   const metaPipeline = (async () => {
     try {
       const tmdbMeta = await getTMDBMetadata(imdbId, type);
-      tmdbReady.resolve(tmdbMeta);
+
+      if (!cachedMeta) tmdbReady.resolve(tmdbMeta);
 
       const wikidataIds = tmdbMeta?.wikidataId
         ? await getWikidataIds(tmdbMeta.wikidataId)
         : {};
-      wikidataReady.resolve(wikidataIds);
+
+      if (!cachedMeta) wikidataReady.resolve(wikidataIds);
+
+      // Guarda/actualiza o cache de metadados (7 dias)
+      if (env.KV && tmdbMeta?.title) {
+        await env.KV.put(
+          metaCacheKey,
+          JSON.stringify({ title: tmdbMeta.title, wikidataIds }),
+          { expirationTtl: META_CACHE_TTL }
+        );
+      }
 
       return { tmdbMeta, wikidataIds };
     } catch (e) {
-      tmdbReady.resolve(null);
-      wikidataReady.resolve({});
+      if (!cachedMeta) {
+        tmdbReady.resolve(null);
+        wikidataReady.resolve({});
+      }
       return { tmdbMeta: null, wikidataIds: {} };
     }
   })();
@@ -467,7 +523,10 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
       metaPipeline
     ]);
 
-  const tmdbMeta = metaResult?.tmdbMeta;
+  // Título: preferir o resultado fresco do TMDB, fallback para o do cache
+  const freshTitle = metaResult?.tmdbMeta?.title;
+  const title = freshTitle || (cachedMeta ? JSON.parse(cachedMeta).title : imdbId);
+
   const tier = (w, h) => { const m = Math.max(w, h); return m >= 3840 ? 3 : m >= 1900 ? 2 : m >= 1200 ? 1 : 0; };
   const overrides = PROVIDER_OVERRIDES[imdbId] || {};
 
@@ -507,12 +566,9 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
       provider: index === 0 ? `⭐ ${r.provider}` : r.provider
     }));
 
-  const result = {
-    title: tmdbMeta?.title || imdbId,
-    links: links
-  };
+  const result = { title, links };
 
-  // 2. Guarda no KV para a próxima vez
+  // 4. Guarda cache de trailers (48 horas)
   if (links.length > 0 && env.KV) {
     await env.KV.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL });
   }
@@ -539,19 +595,13 @@ export default {
 
     if (url.pathname === '/manifest.json') {
       return new Response(JSON.stringify(MANIFEST), {
-        headers: {
-          ...corsHeaders,
-          'Cache-Control': 'public, max-age=3600'
-        }
+        headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=3600' }
       });
     }
 
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ status: 'ok', edge: request.cf?.colo, hasKV: !!env.KV }), {
-        headers: {
-          ...corsHeaders,
-          'Cache-Control': 'public, max-age=300'
-        }
+        headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=300' }
       });
     }
 
