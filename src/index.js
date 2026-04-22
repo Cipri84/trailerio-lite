@@ -20,7 +20,7 @@ const MANIFEST = {
 };
 
 const CACHE_TTL      = 172800;  // 48 horas — trailers
-const META_CACHE_TTL = 432000;  // 5 dias  — metadados (título + IDs Wikidata)
+const META_CACHE_TTL = 259200;  // 3 dias  — metadados (título + IDs Wikidata)
 const TMDB_API_KEY   = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
@@ -256,17 +256,34 @@ async function resolveAppleTVUS(imdbId, wikidataIdsPromise) {
   return await resolveAppleTVForLocale(appleId, wikidataIds?.isAppleTvShow || false, locale);
 }
 
-// Digital Digest — PeerTube 4K (pesquisa por IMDb ID)
-async function resolveDigitalDigest(imdbId) {
+// Digital Digest — PeerTube 4K (pesquisa por título via TMDB)
+async function resolveDigitalDigest(tmdbMetaPromise) {
   try {
+    const tmdbMeta = await tmdbMetaPromise;
+    const title = tmdbMeta?.title;
+    if (!title) return null;
+
+    const query = encodeURIComponent(title);
     const searchRes = await fetchWithTimeout(
-      `https://trailers.ddigest.com/api/v1/search/videos?search=${imdbId}&count=5`,
+      `https://trailers.ddigest.com/api/v1/search/videos?search=${query}&count=5`,
       { headers: { 'Accept': 'application/json' } },
       2000
     );
     if (!searchRes.ok) return null;
     const searchData = await searchRes.json();
-    const video = searchData.data?.[0];
+    if (!searchData.data?.length) return null;
+
+    // Prefere trailer oficial, evita teasers/clips/spots
+    const junk = /teaser|clip|spot|featurette|behind|sneak|opening/i;
+    const trailerFirst = v => {
+      const t = (v.name || '').toLowerCase();
+      if (t.includes('trailer') && !junk.test(t)) return 0;
+      if (t.includes('trailer')) return 1;
+      if (!junk.test(t)) return 2;
+      return 3;
+    };
+    const sorted = [...searchData.data].sort((a, b) => trailerFirst(a) - trailerFirst(b));
+    const video = sorted[0];
     if (!video) return null;
 
     const videoRes = await fetchWithTimeout(
@@ -509,7 +526,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v89:${imdbId}`;
+  const cacheKey     = `trailer:v88:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
@@ -564,7 +581,7 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
   const [appleTvPTResult, ddResult, appleTvUSResult, imdbResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
       resolveAppleTVPT(imdbId, wikidataReady.promise),
-      resolveDigitalDigest(imdbId),
+      resolveDigitalDigest(tmdbReady.promise),
       resolveAppleTVUS(imdbId, wikidataReady.promise),
       resolveIMDb(imdbId),
       resolveRottenTomatoes(wikidataReady.promise),
