@@ -459,7 +459,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v93:${imdbId}`;
+  const cacheKey     = `trailer:v94:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
