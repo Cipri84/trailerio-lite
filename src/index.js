@@ -20,7 +20,7 @@ const MANIFEST = {
 };
 
 const CACHE_TTL      = 172800;  // 48 horas — trailers
-const META_CACHE_TTL = 259200;  // 3 dias  — metadados (título + IDs Wikidata)
+const META_CACHE_TTL = 432000;  // 5 dias  — metadados (título + IDs Wikidata)
 const TMDB_API_KEY   = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
