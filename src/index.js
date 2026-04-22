@@ -294,10 +294,14 @@ async function resolveDigitalDigest(tmdbMetaPromise) {
     if (!videoRes.ok) return null;
     const videoData = await videoRes.json();
 
-    const files = videoData.files || videoData.streamingPlaylists?.[0]?.files || [];
-    if (files.length === 0) return null;
+    const allFiles = videoData.files || videoData.streamingPlaylists?.[0]?.files || [];
+    // Filtra ficheiros de áudio (resolution.id === 0 ou label contém "Audio")
+    const videoFiles = allFiles.filter(f =>
+      f.resolution?.id > 0 && !/audio/i.test(f.resolution?.label || '')
+    );
+    if (videoFiles.length === 0) return null;
 
-    const best = files.sort((a, b) => (b.resolution?.id || 0) - (a.resolution?.id || 0))[0];
+    const best = videoFiles.sort((a, b) => (b.resolution?.id || 0) - (a.resolution?.id || 0))[0];
     const url = best?.fileUrl || best?.fileDownloadUrl;
     if (!url) return null;
 
@@ -526,7 +530,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v91:${imdbId}`;
+  const cacheKey     = `trailer:v92:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
