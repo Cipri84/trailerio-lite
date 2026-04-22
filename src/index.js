@@ -3,9 +3,9 @@
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
-  version: '1.2.0',
+  version: '1.3.0',
   name: 'Trailerio',
-  description: 'Trailer addon - Fandango, Apple TV, Rotten Tomatoes, MUBI, IMDb',
+  description: 'Trailer addon - Apple TV, Digital Digest, IMDb, Rotten Tomatoes, Fandango, MUBI',
   logo: 'https://raw.githubusercontent.com/9mousaa/trailerio-lite/main/icon.png',
   resources: [
     {
@@ -40,6 +40,7 @@ const APPLETV_ID_OVERRIDES = {
   'tt13622970': { id: 'umc.cmc.6a0vv8bp0aa4fij9rn6fak8lt', locale: 'pt' },  // Vaiana 2
   'tt29623480': { id: 'umc.cmc.3vk9rngh0rrmpnyhv2qwzm582', locale: 'pt' },  // Robot Selvagem
   'tt0468569':  { id: 'umc.cmc.1uf4c3neuc9yxhnjv7t4rd5wa', locale: 'pt' },  // O Cavaleiro das Trevas
+  'tt30017619': { id: 'umc.cmc.2ewfnaq853ueokr49pv4brr1d', locale: 'pt' },  // The Bad Guys 2
 };
 
 // ============== UTILITIES ==============
@@ -217,26 +218,76 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
   return null;
 }
 
-async function resolveAppleTV(imdbId, wikidataIdsPromise) {
+// Apple TV PT — primeira escolha
+async function resolveAppleTVPT(imdbId, wikidataIdsPromise) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
   if (idOverride) {
-    return await resolveAppleTVForLocale(idOverride.id, false, idOverride.locale);
+    // Só trata overrides com locale pt
+    return idOverride.locale === 'pt'
+      ? await resolveAppleTVForLocale(idOverride.id, false, 'pt')
+      : null;
+  }
+
+  // Se forçado para US, o PT não existe
+  if (APPLETV_LOCALE_OVERRIDES[imdbId] === 'us') return null;
+
+  const wikidataIds = await wikidataIdsPromise;
+  const appleId = wikidataIds?.appleTvId;
+  if (!appleId) return null;
+
+  return await resolveAppleTVForLocale(appleId, wikidataIds?.isAppleTvShow || false, 'pt');
+}
+
+// Apple TV US — fallback quando PT não existe
+async function resolveAppleTVUS(imdbId, wikidataIdsPromise) {
+  const idOverride = APPLETV_ID_OVERRIDES[imdbId];
+  if (idOverride) {
+    // Só trata overrides com locale us
+    return idOverride.locale === 'us'
+      ? await resolveAppleTVForLocale(idOverride.id, false, 'us')
+      : null;
   }
 
   const wikidataIds = await wikidataIdsPromise;
   const appleId = wikidataIds?.appleTvId;
   if (!appleId) return null;
 
-  const isShow = wikidataIds?.isAppleTvShow || false;
-  const localeOverride = APPLETV_LOCALE_OVERRIDES[imdbId];
-  if (localeOverride) {
-    return await resolveAppleTVForLocale(appleId, isShow, localeOverride);
-  }
+  const locale = APPLETV_LOCALE_OVERRIDES[imdbId] || 'us';
+  return await resolveAppleTVForLocale(appleId, wikidataIds?.isAppleTvShow || false, locale);
+}
 
-  const ptResult = await resolveAppleTVForLocale(appleId, isShow, 'pt');
-  if (ptResult) return ptResult;
+// Digital Digest — PeerTube 4K (pesquisa por IMDb ID)
+async function resolveDigitalDigest(imdbId) {
+  try {
+    const searchRes = await fetchWithTimeout(
+      `https://trailers.digitaldigest.com/api/v1/search/videos?search=${imdbId}&count=5`,
+      { headers: { 'Accept': 'application/json' } },
+      2000
+    );
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    const video = searchData.data?.[0];
+    if (!video) return null;
 
-  return await resolveAppleTVForLocale(appleId, isShow, 'us');
+    const videoRes = await fetchWithTimeout(
+      `https://trailers.digitaldigest.com/api/v1/videos/${video.uuid}`,
+      { headers: { 'Accept': 'application/json' } },
+      2000
+    );
+    if (!videoRes.ok) return null;
+    const videoData = await videoRes.json();
+
+    const files = videoData.files || videoData.streamingPlaylists?.[0]?.files || [];
+    if (files.length === 0) return null;
+
+    const best = files.sort((a, b) => (b.resolution?.id || 0) - (a.resolution?.id || 0))[0];
+    const url = best?.fileUrl || best?.fileDownloadUrl;
+    if (!url) return null;
+
+    const quality = best.resolution?.label || '1080p';
+    return { url, provider: `Digital Digest ${quality}`, bitrate: 0, width: 0, height: 0 };
+  } catch (e) { /* silent fail */ }
+  return null;
 }
 
 async function resolveRottenTomatoes(wikidataIdsPromise) {
@@ -458,7 +509,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v87:${imdbId}`;
+  const cacheKey     = `trailer:v88:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
@@ -470,8 +521,7 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
   const tmdbReady     = deferred();
   const wikidataReady = deferred();
 
-  // 2. Cache de metadados — se existir, resolve wikidataReady imediatamente
-  //    e todos os resolvers arrancam em paralelo sem esperar TMDB+Wikidata
+  // 2. Cache de metadados — se existir, todos os resolvers arrancam imediatamente
   const cachedMeta = env.KV && !fresh ? await env.KV.get(metaCacheKey) : null;
 
   if (cachedMeta) {
@@ -481,20 +531,16 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
   }
 
   // 3. Pipeline de metadados — corre sempre para refrescar o cache de meta
-  //    mas só bloqueia os resolvers se não havia cache
   const metaPipeline = (async () => {
     try {
       const tmdbMeta = await getTMDBMetadata(imdbId, type);
-
       if (!cachedMeta) tmdbReady.resolve(tmdbMeta);
 
       const wikidataIds = tmdbMeta?.wikidataId
         ? await getWikidataIds(tmdbMeta.wikidataId)
         : {};
-
       if (!cachedMeta) wikidataReady.resolve(wikidataIds);
 
-      // Guarda/actualiza o cache de metadados (7 dias)
       if (env.KV && tmdbMeta?.title) {
         await env.KV.put(
           metaCacheKey,
@@ -513,21 +559,23 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
     }
   })();
 
-  const [imdbResult, appleTvResult, rtResult, fandangoResult, mubiResult, metaResult] =
+  // 4. Todos os resolvers em paralelo
+  // Ordem de prioridade: Apple TV PT → Digital Digest → Apple TV US → IMDb → RT → Fandango → MUBI
+  const [appleTvPTResult, ddResult, appleTvUSResult, imdbResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
+      resolveAppleTVPT(imdbId, wikidataReady.promise),
+      resolveDigitalDigest(imdbId),
+      resolveAppleTVUS(imdbId, wikidataReady.promise),
       resolveIMDb(imdbId),
-      resolveAppleTV(imdbId, wikidataReady.promise),
       resolveRottenTomatoes(wikidataReady.promise),
       resolveFandango(wikidataReady.promise),
       resolveMUBI(wikidataReady.promise, tmdbReady.promise),
       metaPipeline
     ]);
 
-  // Título: preferir o resultado fresco do TMDB, fallback para o do cache
   const freshTitle = metaResult?.tmdbMeta?.title;
   const title = freshTitle || (cachedMeta ? JSON.parse(cachedMeta).title : imdbId);
 
-  const tier = (w, h) => { const m = Math.max(w, h); return m >= 3840 ? 3 : m >= 1900 ? 2 : m >= 1200 ? 1 : 0; };
   const overrides = PROVIDER_OVERRIDES[imdbId] || {};
 
   const isExcluded = (r) => {
@@ -538,23 +586,28 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
   };
 
   const providerOrder = (r) => {
+    // Overrides manuais
     for (const [name, order] of Object.entries(overrides)) {
       if (r.provider.includes(name) && order !== null) return order;
     }
     if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
-    if (r.provider.includes('Apple TV')) return 11;
-    const t = tier(r.width, r.height);
-    if (t === 3) return 12;
-    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13;
-    if (r.provider.includes('IMDb')) return 14;
-    if (r.provider.includes('MUBI')) return 15;
-    return 16 + (3 - t);
+    if (r.provider.includes('Digital Digest'))               return 11;
+    if (r.provider.includes('Apple TV'))                     return 12; // US
+    if (r.provider.includes('IMDb'))                         return 13;
+    if (r.provider.includes('Rotten Tomatoes'))              return 14;
+    if (r.provider.includes('Fandango'))                     return 15;
+    if (r.provider.includes('MUBI'))                         return 16;
+    return 17;
   };
 
+  const hasPT = appleTvPTResult !== null;
+
   const seen = new Set();
-  const links = [imdbResult, appleTvResult, rtResult, fandangoResult, mubiResult]
+  const links = [appleTvPTResult, ddResult, appleTvUSResult, imdbResult, rtResult, fandangoResult, mubiResult]
     .filter(r => r !== null)
     .filter(r => !isExcluded(r))
+    // Esconde Apple TV US quando Apple TV PT existe
+    .filter(r => !(hasPT && r.provider.includes('Apple TV') && r.locale === 'us'))
     .sort((a, b) => providerOrder(a) - providerOrder(b) || b.bitrate - a.bitrate)
     .filter(r => {
       if (seen.has(r.url)) return false;
@@ -568,7 +621,7 @@ async function resolveTrailers(imdbId, type, env, fresh = false) {
 
   const result = { title, links };
 
-  // 4. Guarda cache de trailers (48 horas)
+  // 5. Guarda cache de trailers (48 horas)
   if (links.length > 0 && env.KV) {
     await env.KV.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL });
   }
