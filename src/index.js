@@ -260,7 +260,7 @@ async function resolveAppleTVUS(imdbId, wikidataIdsPromise) {
 async function resolveDigitalDigest(imdbId) {
   try {
     const searchRes = await fetchWithTimeout(
-      `https://trailers.digitaldigest.com/api/v1/search/videos?search=${imdbId}&count=5`,
+      `https://trailers.ddigest.com/api/v1/search/videos?search=${imdbId}&count=5`,
       { headers: { 'Accept': 'application/json' } },
       2000
     );
@@ -270,7 +270,7 @@ async function resolveDigitalDigest(imdbId) {
     if (!video) return null;
 
     const videoRes = await fetchWithTimeout(
-      `https://trailers.digitaldigest.com/api/v1/videos/${video.uuid}`,
+      `https://trailers.ddigest.com/api/v1/videos/${video.uuid}`,
       { headers: { 'Accept': 'application/json' } },
       2000
     );
@@ -509,7 +509,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, fresh = false) {
-  const cacheKey     = `trailer:v88:${imdbId}`;
+  const cacheKey     = `trailer:v89:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // 1. Cache completo de trailer — devolve imediatamente
