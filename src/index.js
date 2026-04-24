@@ -23,6 +23,14 @@ const CACHE_TTL      = 172800;  // 48 horas — trailers
 const META_CACHE_TTL = 432000;  // 5 dias  — metadados (título + IDs Wikidata)
 const TMDB_API_KEY   = 'bfe73358661a995b992ae9a812aa0d2f';
 
+// ============== TIMEOUTS ==============
+// Ajustados ao mínimo viável por tipo de chamada
+
+const TIMEOUT_API      = 1500;  // APIs rápidas: TMDB, IMDb GraphQL
+const TIMEOUT_PAGE     = 2000;  // Páginas HTML completas: Apple TV, RT, Fandango, MUBI
+const TIMEOUT_STREAM   = 1000;  // Ficheiros de metadados pequenos: m3u8, SMIL
+const TIMEOUT_WIKIDATA = 3000;  // Wikidata pode ser lento consoante o edge
+
 // ============== CONFIGURAÇÕES DE EXCEPÇÃO ==============
 
 const PROVIDER_OVERRIDES = {
@@ -51,7 +59,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function fetchWithTimeout(url, options = {}, timeout = 2000) {
+async function fetchWithTimeout(url, options = {}, timeout = TIMEOUT_API) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -121,7 +129,7 @@ async function getWikidataIds(wikidataId) {
     const res = await fetchWithTimeout(
       `https://www.wikidata.org/wiki/Special:EntityData/${wikidataId}.json`,
       { headers: { 'Accept': 'application/json', 'User-Agent': 'TrailerioLite/1.0' } },
-      3500
+      TIMEOUT_WIKIDATA
     );
     const data = await res.json();
     const entity = data.entities?.[wikidataId];
@@ -153,7 +161,7 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
     const pageRes = await fetchWithTimeout(pageUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
       redirect: 'follow'
-    });
+    }, TIMEOUT_PAGE);
 
     if (!pageRes.ok) return null;
     const html = await pageRes.text();
@@ -177,7 +185,7 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
 
     for (const candidate of candidates.slice(0, 3)) {
       try {
-        const m3u8Res = await fetchWithTimeout(candidate.url, {}, 1500);
+        const m3u8Res = await fetchWithTimeout(candidate.url, {}, TIMEOUT_STREAM);
         const m3u8Text = await m3u8Res.text();
 
         if (candidates.length > 1) {
@@ -218,27 +226,24 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
   return null;
 }
 
-// Mantido exatamente igual conforme o teu pedido para dar prioridade PT
-async function resolveAppleTV(imdbId, wikidataIdsPromise) {
+// PT e US correm em paralelo no Promise.all — locale é passado como parâmetro.
+// US é suprimido na lista final se PT tiver resultado (ver resolveTrailers).
+async function resolveAppleTV(imdbId, wikidataIdsPromise, locale) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
   if (idOverride) {
-    return await resolveAppleTVForLocale(idOverride.id, false, idOverride.locale);
+    if (idOverride.locale !== locale) return null;
+    return await resolveAppleTVForLocale(idOverride.id, false, locale);
   }
+
+  const localeOverride = APPLETV_LOCALE_OVERRIDES[imdbId];
+  if (localeOverride && localeOverride !== locale) return null;
 
   const wikidataIds = await wikidataIdsPromise;
   const appleId = wikidataIds?.appleTvId;
   if (!appleId) return null;
 
   const isShow = wikidataIds?.isAppleTvShow || false;
-  const localeOverride = APPLETV_LOCALE_OVERRIDES[imdbId];
-  if (localeOverride) {
-    return await resolveAppleTVForLocale(appleId, isShow, localeOverride);
-  }
-
-  const ptResult = await resolveAppleTVForLocale(appleId, isShow, 'pt');
-  if (ptResult) return ptResult;
-
-  return await resolveAppleTVForLocale(appleId, isShow, 'us');
+  return await resolveAppleTVForLocale(appleId, isShow, locale);
 }
 
 async function resolveRottenTomatoes(wikidataIdsPromise) {
@@ -255,7 +260,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
       : `https://www.rottentomatoes.com/m/${rtSlug}/videos`;
     const pageRes = await fetchWithTimeout(videosUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
+    }, TIMEOUT_PAGE);
     if (!pageRes.ok) return null;
 
     const html = await pageRes.text();
@@ -282,7 +287,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
       if (trailer.file.includes('theplatform.com') || trailer.file.includes('link.theplatform')) {
         try {
           const smilUrl = trailer.file.split('?')[0] + '?format=SMIL';
-          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, 1500);
+          const smilRes = await fetchWithTimeout(smilUrl, { headers: { 'Accept': 'application/smil+xml' } }, TIMEOUT_STREAM);
           if (smilRes.ok) {
             const best = parseSMIL(await smilRes.text());
             if (best) {
@@ -304,7 +309,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
 
       if (/\.m3u8(\?|$)/i.test(trailer.file) || trailer.file.includes('akamai') || trailer.file.includes('cloudfront') || trailer.file.includes('fwmrm') || trailer.file.includes('anvato')) {
         try {
-          const m3u8Res = await fetchWithTimeout(trailer.file, {}, 1500);
+          const m3u8Res = await fetchWithTimeout(trailer.file, {}, TIMEOUT_STREAM);
           if (!m3u8Res.ok) continue;
           const m3u8Text = await m3u8Res.text();
           const streamMatches = [...m3u8Text.matchAll(/#EXT-X-STREAM-INF:.*?BANDWIDTH=(\d+)(?:.*?RESOLUTION=(\d+)x(\d+))?/g)];
@@ -332,7 +337,8 @@ async function resolveFandango(wikidataIdsPromise) {
     const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' };
     const pageRes = await fetchWithTimeout(
       `https://www.fandango.com/x-${fandangoId}/movie-overview`,
-      { headers, redirect: 'follow' }
+      { headers, redirect: 'follow' },
+      TIMEOUT_PAGE
     );
     if (!pageRes.ok) return null;
     const html = await pageRes.text();
@@ -342,7 +348,7 @@ async function resolveFandango(wikidataIdsPromise) {
       try {
         const jwData = JSON.parse(jwMatch[1]);
         if (jwData.contentURL?.includes('theplatform.com')) {
-          const smilRes = await fetchWithTimeout(jwData.contentURL.split('?')[0] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 1500);
+          const smilRes = await fetchWithTimeout(jwData.contentURL.split('?')[0] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, TIMEOUT_STREAM);
           if (smilRes.ok) {
             const best = parseSMIL(await smilRes.text());
             if (best) {
@@ -361,7 +367,7 @@ async function resolveFandango(wikidataIdsPromise) {
 
     const tpMatch = html.match(/(https:\/\/link\.theplatform\.com\/s\/[^"'\s?]+)/);
     if (tpMatch) {
-      const smilRes = await fetchWithTimeout(tpMatch[1] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, 1500);
+      const smilRes = await fetchWithTimeout(tpMatch[1] + '?format=SMIL&formats=mpeg4', { headers: { 'Accept': 'application/smil+xml' } }, TIMEOUT_STREAM);
       if (smilRes.ok) {
         const best = parseSMIL(await smilRes.text());
         if (best) {
@@ -387,7 +393,8 @@ async function resolveMUBI(wikidataIdsPromise, tmdbMetaPromise) {
 
     const pageRes = await fetchWithTimeout(
       `https://mubi.com/en/us/films/${slug}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } },
+      TIMEOUT_PAGE
     );
     if (!pageRes.ok) return null;
 
@@ -411,52 +418,62 @@ const IMDB_GQL_HEADERS = {
   'x-imdb-client-name': 'imdb-web-next-localized',
 };
 
+// Selecciona o melhor URL de uma lista de playbackURLs do IMDb
+function pickBestIMDb(urls) {
+  const mp4s = urls.filter(u => u.videoMimeType?.includes('mp4'));
+  let best = null;
+  for (const q of ['1080p', '720p', '480p', '360p', 'SD']) {
+    best = mp4s.find(u => u.displayName?.value?.includes(q));
+    if (best) break;
+  }
+  if (!best) best = mp4s[0] || urls[0];
+  if (!best?.url) return null;
+  const heightMatch = (best.displayName?.value || '').match(/(\d+)p/);
+  const height = heightMatch ? parseInt(heightMatch[1]) : 0;
+  return { url: best.url, provider: `IMDb ${heightMatch ? height + 'p' : 'SD'}`, bitrate: 0, width: 0, height };
+}
+
 async function resolveIMDb(imdbId) {
   try {
-    const galleryRes = await fetchWithTimeout(
+    // Tenta query combinada — uma única chamada que inclui playbackURLs directamente no nó de vídeo
+    const combinedRes = await fetchWithTimeout(
       'https://caching.graphql.imdb.com/',
       { method: 'POST', headers: IMDB_GQL_HEADERS, body: JSON.stringify({
-        query: `query Q($c:ID!){title(id:$c){primaryVideos(first:5){edges{node{id contentType{displayName{value}}}}}}}`,
+        query: `query Q($c:ID!){title(id:$c){primaryVideos(first:5){edges{node{id contentType{displayName{value}}playbackURLs{displayName{value}url videoMimeType}}}}}}`,
         operationName: 'Q', variables: { c: imdbId }
       })}
     );
-    if (!galleryRes.ok) return null;
 
-    const edges = (await galleryRes.json())?.data?.title?.primaryVideos?.edges || [];
-    const trailerEdge = edges.find(e => /trailer/i.test(e.node?.contentType?.displayName?.value)) || edges[0];
-    if (!trailerEdge) return null;
+    if (combinedRes.ok) {
+      const edges = (await combinedRes.json())?.data?.title?.primaryVideos?.edges || [];
+      const trailerEdge = edges.find(e => /trailer/i.test(e.node?.contentType?.displayName?.value)) || edges[0];
 
-    const playbackRes = await fetchWithTimeout(
-      'https://caching.graphql.imdb.com/',
-      { method: 'POST', headers: IMDB_GQL_HEADERS, body: JSON.stringify({
-        query: `query Q($c:ID!){video(id:$c){playbackURLs{displayName{value}url videoMimeType}}}`,
-        operationName: 'Q', variables: { c: trailerEdge.node.id }
-      })}
-    );
-    if (!playbackRes.ok) return null;
+      if (trailerEdge) {
+        const urls = trailerEdge.node?.playbackURLs || [];
 
-    const urls = (await playbackRes.json())?.data?.video?.playbackURLs || [];
-    if (urls.length === 0) return null;
+        // Query combinada funcionou — zero chamadas adicionais
+        if (urls.length > 0) return pickBestIMDb(urls);
 
-    const mp4s = urls.filter(u => u.videoMimeType?.includes('mp4'));
-    let best = null;
-    for (const q of ['1080p', '720p', '480p', '360p', 'SD']) {
-      best = mp4s.find(u => u.displayName?.value?.includes(q));
-      if (best) break;
+        // playbackURLs não disponível neste nível do schema — fallback para segunda chamada
+        const playbackRes = await fetchWithTimeout(
+          'https://caching.graphql.imdb.com/',
+          { method: 'POST', headers: IMDB_GQL_HEADERS, body: JSON.stringify({
+            query: `query Q($c:ID!){video(id:$c){playbackURLs{displayName{value}url videoMimeType}}}`,
+            operationName: 'Q', variables: { c: trailerEdge.node.id }
+          })}
+        );
+        if (!playbackRes.ok) return null;
+        const urls2 = (await playbackRes.json())?.data?.video?.playbackURLs || [];
+        if (urls2.length === 0) return null;
+        return pickBestIMDb(urls2);
+      }
     }
-    if (!best) best = mp4s[0] || urls[0];
-    if (!best?.url) return null;
-
-    const heightMatch = (best.displayName?.value || '').match(/(\d+)p/);
-    const height = heightMatch ? parseInt(heightMatch[1]) : 0;
-    return { url: best.url, provider: `IMDb ${heightMatch ? height + 'p' : 'SD'}`, bitrate: 0, width: 0, height };
   } catch (e) { /* silent fail */ }
   return null;
 }
 
 // ============== MAIN RESOLVER ==============
 
-// OTIMIZAÇÃO: Recebe ctx como parâmetro
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
   const cacheKey     = `trailer:v94:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
@@ -470,26 +487,26 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
   const wikidataReady = deferred();
 
   const cachedMeta = env.KV && !fresh ? await env.KV.get(metaCacheKey) : null;
+  // Parse único — reutilizado abaixo para evitar JSON.parse duplicado
+  const parsedCachedMeta = cachedMeta ? JSON.parse(cachedMeta) : null;
 
-  if (cachedMeta) {
-    const { title, wikidataIds } = JSON.parse(cachedMeta);
-    tmdbReady.resolve({ title, wikidataId: null, imdbId, actualType: type });
-    wikidataReady.resolve(wikidataIds);
+  if (parsedCachedMeta) {
+    tmdbReady.resolve({ title: parsedCachedMeta.title, wikidataId: null, imdbId, actualType: type });
+    wikidataReady.resolve(parsedCachedMeta.wikidataIds);
   }
 
   const metaPipeline = (async () => {
     try {
       const tmdbMeta = await getTMDBMetadata(imdbId, type);
 
-      if (!cachedMeta) tmdbReady.resolve(tmdbMeta);
+      if (!parsedCachedMeta) tmdbReady.resolve(tmdbMeta);
 
       const wikidataIds = tmdbMeta?.wikidataId
         ? await getWikidataIds(tmdbMeta.wikidataId)
         : {};
 
-      if (!cachedMeta) wikidataReady.resolve(wikidataIds);
+      if (!parsedCachedMeta) wikidataReady.resolve(wikidataIds);
 
-      // OTIMIZAÇÃO: Usa ctx.waitUntil para guardar na cache sem bloquear
       if (env.KV && tmdbMeta?.title) {
         ctx.waitUntil(
           env.KV.put(
@@ -502,7 +519,7 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
       return { tmdbMeta, wikidataIds };
     } catch (e) {
-      if (!cachedMeta) {
+      if (!parsedCachedMeta) {
         tmdbReady.resolve(null);
         wikidataReady.resolve({});
       }
@@ -510,10 +527,12 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     }
   })();
 
-  const [imdbResult, appleTvResult, rtResult, fandangoResult, mubiResult, metaResult] =
+  // Apple TV PT e US correm em paralelo; US é suprimido na lista final se PT tiver resultado
+  const [imdbResult, appleTvPTResult, appleTvUSResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
       resolveIMDb(imdbId),
-      resolveAppleTV(imdbId, wikidataReady.promise),
+      resolveAppleTV(imdbId, wikidataReady.promise, 'pt'),
+      resolveAppleTV(imdbId, wikidataReady.promise, 'us'),
       resolveRottenTomatoes(wikidataReady.promise),
       resolveFandango(wikidataReady.promise),
       resolveMUBI(wikidataReady.promise, tmdbReady.promise),
@@ -521,7 +540,7 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     ]);
 
   const freshTitle = metaResult?.tmdbMeta?.title;
-  const title = freshTitle || (cachedMeta ? JSON.parse(cachedMeta).title : imdbId);
+  const title = freshTitle || parsedCachedMeta?.title || imdbId;
 
   const tier = (w, h) => { const m = Math.max(w, h); return m >= 3840 ? 3 : m >= 1900 ? 2 : m >= 1200 ? 1 : 0; };
   const overrides = PROVIDER_OVERRIDES[imdbId] || {};
@@ -547,8 +566,11 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     return 16 + (3 - t);
   };
 
+  // Suprime o resultado US se PT tiver resultado
+  const hasPT = appleTvPTResult !== null;
+
   const seen = new Set();
-  const links = [imdbResult, appleTvResult, rtResult, fandangoResult, mubiResult]
+  const links = [imdbResult, appleTvPTResult, hasPT ? null : appleTvUSResult, rtResult, fandangoResult, mubiResult]
     .filter(r => r !== null)
     .filter(r => !isExcluded(r))
     .sort((a, b) => providerOrder(a) - providerOrder(b) || b.bitrate - a.bitrate)
@@ -564,7 +586,6 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
   const result = { title, links };
 
-  // OTIMIZAÇÃO: Usa ctx.waitUntil para guardar na cache sem bloquear
   if (links.length > 0 && env.KV) {
     ctx.waitUntil(
       env.KV.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL })
@@ -609,7 +630,6 @@ export default {
       const imdbId = id.split(':')[0];
       const fresh = url.searchParams.has('fresh');
 
-      // OTIMIZAÇÃO: ctx é passado aqui
       const result = await resolveTrailers(imdbId, type, env, ctx, fresh);
 
       return new Response(JSON.stringify({
