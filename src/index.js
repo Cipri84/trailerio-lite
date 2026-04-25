@@ -119,6 +119,7 @@ async function getTMDBMetadata(imdbId, type = 'movie') {
 
     return { tmdbId, title, wikidataId: extData.wikidata_id, imdbId, actualType };
   } catch (e) {
+    console.error(`[TMDB] ${imdbId}:`, e?.message ?? e);
     return null;
   }
 }
@@ -146,6 +147,7 @@ async function getWikidataIds(wikidataId) {
       mubiId: entity.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
     };
   } catch (e) {
+    console.error(`[Wikidata] ${wikidataId}:`, e?.message ?? e);
     return {};
   }
 }
@@ -222,11 +224,9 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
     if (candidates.length > 0) {
       return { url: candidates[0].url, provider: 'Apple TV', bitrate: 0, width: 0, height: 0, locale };
     }
-  } catch (e) { /* silent fail */ }
+  } catch (e) { console.error(`[AppleTV:${locale}] ${appleId}:`, e?.message ?? e); }
   return null;
-}
-
-// PT e US correm em paralelo no Promise.all — locale é passado como parâmetro.
+} no Promise.all — locale é passado como parâmetro.
 // US é suprimido na lista final se PT tiver resultado (ver resolveTrailers).
 async function resolveAppleTV(imdbId, wikidataIdsPromise, locale) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
@@ -324,7 +324,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
         } catch (e) { /* try next */ }
       }
     }
-  } catch (e) { /* silent fail */ }
+  } catch (e) { console.error(`[RT]:`, e?.message ?? e); }
   return null;
 }
 
@@ -376,7 +376,7 @@ async function resolveFandango(wikidataIdsPromise) {
         }
       }
     }
-  } catch (e) { /* silent fail */ }
+  } catch (e) { console.error(`[Fandango]:`, e?.message ?? e); }
   return null;
 }
 
@@ -405,7 +405,7 @@ async function resolveMUBI(wikidataIdsPromise, tmdbMetaPromise) {
     trailerUrls.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
     const height = parseInt(trailerUrls[0][1]) || 720;
     return { url: trailerUrls[0][0], provider: `MUBI ${height}p`, bitrate: 0, width: Math.round(height * 16 / 9), height };
-  } catch (e) { /* silent fail */ }
+  } catch (e) { console.error(`[MUBI]:`, e?.message ?? e); }
   return null;
 }
 
@@ -468,14 +468,14 @@ async function resolveIMDb(imdbId) {
         return pickBestIMDb(urls2);
       }
     }
-  } catch (e) { /* silent fail */ }
+  } catch (e) { console.error(`[IMDb] ${imdbId}:`, e?.message ?? e); }
   return null;
 }
 
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v95:${imdbId}`;
+  const cacheKey     = `trailer:v97:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   if (!fresh && env.KV) {
@@ -519,6 +519,7 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
       return { tmdbMeta, wikidataIds };
     } catch (e) {
+      console.error(`[metaPipeline] ${imdbId}:`, e?.message ?? e);
       if (!parsedCachedMeta) {
         tmdbReady.resolve(null);
         wikidataReady.resolve({});
