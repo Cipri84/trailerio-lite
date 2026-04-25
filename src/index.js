@@ -226,7 +226,9 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
     }
   } catch (e) { console.error(`[AppleTV:${locale}] ${appleId}:`, e?.message ?? e); }
   return null;
-} no Promise.all — locale é passado como parâmetro.
+}
+
+// PT e US correm em paralelo no Promise.all — locale é passado como parâmetro.
 // US é suprimido na lista final se PT tiver resultado (ver resolveTrailers).
 async function resolveAppleTV(imdbId, wikidataIdsPromise, locale) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
