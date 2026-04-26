@@ -24,7 +24,6 @@ const META_CACHE_TTL = 432000;  // 5 dias  — metadados (título + IDs Wikidata
 const TMDB_API_KEY   = 'bfe73358661a995b992ae9a812aa0d2f';
 
 // ============== TIMEOUTS ==============
-// Ajustados ao mínimo viável por tipo de chamada
 
 const TIMEOUT_API      = 1500;  // APIs rápidas: TMDB, IMDb GraphQL
 const TIMEOUT_PAGE     = 2000;  // Páginas HTML completas: Apple TV, RT, Fandango, MUBI
@@ -92,39 +91,7 @@ function parseSMIL(smilXml) {
   return videos[0];
 }
 
-// ============== TMDB METADATA ==============
-
-async function getTMDBMetadata(imdbId, type = 'movie') {
-  try {
-    const findRes = await fetchWithTimeout(
-      `https://api.themoviedb.org/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`
-    );
-    const findData = await findRes.json();
-
-    let results = type === 'series' ? findData.tv_results : findData.movie_results;
-    let actualType = type;
-
-    if (!results || results.length === 0) {
-      results = type === 'series' ? findData.movie_results : findData.tv_results;
-      actualType = type === 'series' ? 'movie' : 'series';
-    }
-
-    if (!results || results.length === 0) return null;
-
-    const tmdbId = results[0].id;
-    const title = results[0].title || results[0].name;
-
-    const extRes = await fetchWithTimeout(
-      `https://api.themoviedb.org/3/${actualType === 'series' ? 'tv' : 'movie'}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`
-    );
-    const extData = await extRes.json();
-
-    return { tmdbId, title, wikidataId: extData.wikidata_id, imdbId, actualType };
-  } catch (e) {
-    console.error(`[TMDB] ${imdbId}:`, e?.message ?? e);
-    return null;
-  }
-}
+// ============== WIKIDATA ==============
 
 async function getWikidataIds(wikidataId) {
   if (!wikidataId) return {};
@@ -139,14 +106,14 @@ async function getWikidataIds(wikidataId) {
     if (!entity) return {};
 
     const appleTvMovieId = entity.claims?.P9586?.[0]?.mainsnak?.datavalue?.value;
-    const appleTvShowId = entity.claims?.P9751?.[0]?.mainsnak?.datavalue?.value;
+    const appleTvShowId  = entity.claims?.P9751?.[0]?.mainsnak?.datavalue?.value;
 
     return {
-      appleTvId: appleTvMovieId || appleTvShowId,
+      appleTvId:    appleTvMovieId || appleTvShowId,
       isAppleTvShow: !!appleTvShowId && !appleTvMovieId,
-      rtSlug: entity.claims?.P1258?.[0]?.mainsnak?.datavalue?.value,
-      fandangoId: entity.claims?.P5693?.[0]?.mainsnak?.datavalue?.value,
-      mubiId: entity.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
+      rtSlug:       entity.claims?.P1258?.[0]?.mainsnak?.datavalue?.value,
+      fandangoId:   entity.claims?.P5693?.[0]?.mainsnak?.datavalue?.value,
+      mubiId:       entity.claims?.P7299?.[0]?.mainsnak?.datavalue?.value
     };
   } catch (e) {
     console.error(`[Wikidata] ${wikidataId}:`, e?.message ?? e);
@@ -204,13 +171,13 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
         if (streamMatches.length === 0) continue;
 
         streamMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
-        const width = streamMatches[0][2] ? parseInt(streamMatches[0][2]) : 0;
-        const height = streamMatches[0][3] ? parseInt(streamMatches[0][3]) : 0;
+        const width   = streamMatches[0][2] ? parseInt(streamMatches[0][2]) : 0;
+        const height  = streamMatches[0][3] ? parseInt(streamMatches[0][3]) : 0;
         const bitrate = Math.round(parseInt(streamMatches[0][1]) / 1000);
 
-        const hasDV = /dvh1/i.test(m3u8Text) || /VIDEO-RANGE=PQ/i.test(m3u8Text);
-        const hasHDR = hasDV || /VIDEO-RANGE=HLG/i.test(m3u8Text) || /hev1\.\d+\.\d+\.L\d+/i.test(m3u8Text);
-        const hasAtmos = /atmos|ec-3/i.test(m3u8Text);
+        const hasDV      = /dvh1/i.test(m3u8Text) || /VIDEO-RANGE=PQ/i.test(m3u8Text);
+        const hasHDR     = hasDV || /VIDEO-RANGE=HLG/i.test(m3u8Text) || /hev1\.\d+\.\d+\.L\d+/i.test(m3u8Text);
+        const hasAtmos   = /atmos|ec-3/i.test(m3u8Text);
         const hasSurround = hasAtmos || /CHANNELS="6"|CHANNELS="8"|ac-3/i.test(m3u8Text);
 
         let quality = width >= 3840 ? '4K' : width >= 1900 ? '1080p' : width >= 1200 ? '720p' : '1080p';
@@ -230,8 +197,7 @@ async function resolveAppleTVForLocale(appleId, isShow, locale) {
   return null;
 }
 
-// PT e US correm em paralelo no Promise.all — locale é passado como parâmetro.
-// US é suprimido na lista final se PT tiver resultado (ver resolveTrailers).
+// PT e US correm em paralelo no Promise.all — US é suprimido se PT tiver resultado.
 async function resolveAppleTV(imdbId, wikidataIdsPromise, locale) {
   const idOverride = APPLETV_ID_OVERRIDES[imdbId];
   if (idOverride) {
@@ -319,7 +285,7 @@ async function resolveRottenTomatoes(wikidataIdsPromise) {
           const streamMatches = [...m3u8Text.matchAll(/#EXT-X-STREAM-INF:.*?BANDWIDTH=(\d+)(?:.*?RESOLUTION=(\d+)x(\d+))?/g)];
           if (streamMatches.length > 0) {
             streamMatches.sort((a, b) => parseInt(b[1]) - parseInt(a[1]));
-            const width = streamMatches[0][2] ? parseInt(streamMatches[0][2]) : 1920;
+            const width  = streamMatches[0][2] ? parseInt(streamMatches[0][2]) : 1920;
             const height = streamMatches[0][3] ? parseInt(streamMatches[0][3]) : 1080;
             const quality = height >= 1080 ? '1080p' : `${height}p`;
             return { url: trailer.file, provider: `Rotten Tomatoes ${quality}`, bitrate: Math.round(parseInt(streamMatches[0][1]) / 1000), width, height };
@@ -422,7 +388,6 @@ const IMDB_GQL_HEADERS = {
   'x-imdb-client-name': 'imdb-web-next-localized',
 };
 
-// Selecciona o melhor URL de uma lista de playbackURLs do IMDb
 function pickBestIMDb(urls) {
   const mp4s = urls.filter(u => u.videoMimeType?.includes('mp4'));
   let best = null;
@@ -439,7 +404,6 @@ function pickBestIMDb(urls) {
 
 async function resolveIMDb(imdbId) {
   try {
-    // Tenta query combinada — uma única chamada que inclui playbackURLs directamente no nó de vídeo
     const combinedRes = await fetchWithTimeout(
       'https://caching.graphql.imdb.com/',
       { method: 'POST', headers: IMDB_GQL_HEADERS, body: JSON.stringify({
@@ -455,10 +419,8 @@ async function resolveIMDb(imdbId) {
       if (trailerEdge) {
         const urls = trailerEdge.node?.playbackURLs || [];
 
-        // Query combinada funcionou — zero chamadas adicionais
         if (urls.length > 0) return pickBestIMDb(urls);
 
-        // playbackURLs não disponível neste nível do schema — fallback para segunda chamada
         const playbackRes = await fetchWithTimeout(
           'https://caching.graphql.imdb.com/',
           { method: 'POST', headers: IMDB_GQL_HEADERS, body: JSON.stringify({
@@ -479,49 +441,86 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v94:${imdbId}`;
+  const cacheKey     = `trailer:v98:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
-  if (!fresh && env.KV) {
-    const cached = await env.KV.get(cacheKey);
-    if (cached) return JSON.parse(cached);
-  }
+  // [FIX 1] Ambos os reads KV correm em paralelo — elimina ~100ms de latência sequencial
+  const [cachedTrailer, cachedMetaRaw] = await Promise.all([
+    (env.KV && !fresh) ? env.KV.get(cacheKey)     : Promise.resolve(null),
+    (env.KV && !fresh) ? env.KV.get(metaCacheKey) : Promise.resolve(null)
+  ]);
+
+  if (cachedTrailer) return JSON.parse(cachedTrailer);
+
+  const parsedCachedMeta = cachedMetaRaw ? JSON.parse(cachedMetaRaw) : null;
 
   const tmdbReady     = deferred();
   const wikidataReady = deferred();
 
-  const cachedMeta = env.KV && !fresh ? await env.KV.get(metaCacheKey) : null;
-  // Parse único — reutilizado abaixo para evitar JSON.parse duplicado
-  const parsedCachedMeta = cachedMeta ? JSON.parse(cachedMeta) : null;
-
+  // Se já temos meta em cache, os deferreds resolvem imediatamente
   if (parsedCachedMeta) {
-    tmdbReady.resolve({ title: parsedCachedMeta.title, wikidataId: null, imdbId, actualType: type });
+    tmdbReady.resolve({ title: parsedCachedMeta.title, imdbId, actualType: type });
     wikidataReady.resolve(parsedCachedMeta.wikidataIds);
   }
 
+  // [FIX 2] Pipeline em duas fases: tmdbReady resolve após a 1ª chamada TMDB
+  // (antes resolvia só após TMDB find + TMDB external_ids + Wikidata)
+  // MUBI desbloqueia ~1500ms mais cedo em cache fria
   const metaPipeline = (async () => {
     try {
-      const tmdbMeta = await getTMDBMetadata(imdbId, type);
+      // Fase 1: TMDB find — obtém título e tmdbId
+      let tmdbPartial = null;
+      try {
+        const findRes = await fetchWithTimeout(
+          `https://api.themoviedb.org/3/find/${imdbId}?api_key=${TMDB_API_KEY}&external_source=imdb_id`
+        );
+        const findData = await findRes.json();
+        let results   = type === 'series' ? findData.tv_results : findData.movie_results;
+        let actualType = type;
+        if (!results?.length) {
+          results    = type === 'series' ? findData.movie_results : findData.tv_results;
+          actualType = type === 'series' ? 'movie' : 'series';
+        }
+        if (results?.length) {
+          tmdbPartial = {
+            tmdbId:     results[0].id,
+            title:      results[0].title || results[0].name,
+            imdbId,
+            actualType
+          };
+        }
+      } catch (e) { console.error(`[TMDB find] ${imdbId}:`, e?.message ?? e); }
 
-      if (!parsedCachedMeta) tmdbReady.resolve(tmdbMeta);
+      // MUBI pode arrancar agora — só precisa do título
+      if (!parsedCachedMeta) tmdbReady.resolve(tmdbPartial);
 
-      const wikidataIds = tmdbMeta?.wikidataId
-        ? await getWikidataIds(tmdbMeta.wikidataId)
-        : {};
+      // Fase 2: TMDB external_ids → Wikidata — desbloqueia Apple TV, RT, Fandango
+      let wikidataIds = {};
+      if (tmdbPartial?.tmdbId) {
+        try {
+          const endpoint = tmdbPartial.actualType === 'series' ? 'tv' : 'movie';
+          const extRes   = await fetchWithTimeout(
+            `https://api.themoviedb.org/3/${endpoint}/${tmdbPartial.tmdbId}/external_ids?api_key=${TMDB_API_KEY}`
+          );
+          const extData    = await extRes.json();
+          const wikidataId = extData.wikidata_id;
+          if (wikidataId) {
+            wikidataIds = await getWikidataIds(wikidataId);
+          }
+        } catch (e) { console.error(`[TMDB ext/Wikidata] ${imdbId}:`, e?.message ?? e); }
+      }
 
       if (!parsedCachedMeta) wikidataReady.resolve(wikidataIds);
 
-      if (env.KV && tmdbMeta?.title) {
+      // Guardar meta em cache para próximas chamadas
+      const title = tmdbPartial?.title;
+      if (env.KV && title) {
         ctx.waitUntil(
-          env.KV.put(
-            metaCacheKey,
-            JSON.stringify({ title: tmdbMeta.title, wikidataIds }),
-            { expirationTtl: META_CACHE_TTL }
-          )
+          env.KV.put(metaCacheKey, JSON.stringify({ title, wikidataIds }), { expirationTtl: META_CACHE_TTL })
         );
       }
 
-      return { tmdbMeta, wikidataIds };
+      return { tmdbMeta: tmdbPartial, wikidataIds };
     } catch (e) {
       console.error(`[metaPipeline] ${imdbId}:`, e?.message ?? e);
       if (!parsedCachedMeta) {
@@ -532,7 +531,8 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     }
   })();
 
-  // Apple TV PT e US correm em paralelo; US é suprimido na lista final se PT tiver resultado
+  // Todas as fontes correm em paralelo
+  // Apple TV PT e US em paralelo; US suprimido na lista final se PT tiver resultado
   const [imdbResult, appleTvPTResult, appleTvUSResult, rtResult, fandangoResult, mubiResult, metaResult] =
     await Promise.all([
       resolveIMDb(imdbId),
@@ -571,7 +571,6 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     return 16 + (3 - t);
   };
 
-  // Suprime o resultado US se PT tiver resultado
   const hasPT = appleTvPTResult !== null;
 
   const seen = new Set();
@@ -633,15 +632,15 @@ export default {
     if (metaMatch) {
       const [, type, id] = metaMatch;
       const imdbId = id.split(':')[0];
-      const fresh = url.searchParams.has('fresh');
+      const fresh  = url.searchParams.has('fresh');
 
       const result = await resolveTrailers(imdbId, type, env, ctx, fresh);
 
       return new Response(JSON.stringify({
         meta: {
-          id: imdbId,
-          type: type,
-          name: result.title,
+          id:    imdbId,
+          type:  type,
+          name:  result.title,
           links: result.links
         }
       }), {
