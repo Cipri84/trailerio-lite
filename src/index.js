@@ -441,8 +441,18 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v98:${imdbId}`;
+  const cacheKey     = `trailer:v94:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
+
+  // [FIX 4] Cache API — camada edge-local à frente do KV
+  // Na segunda leitura no mesmo edge não toca no KV (elimina a inconsistência do "eventually consistent")
+  const cacheApi    = caches.default;
+  const cacheApiReq = new Request(`https://trailerio-cache/${cacheKey}`);
+
+  if (!fresh) {
+    const edgeCached = await cacheApi.match(cacheApiReq);
+    if (edgeCached) return await edgeCached.json();
+  }
 
   // [FIX 1] Ambos os reads KV correm em paralelo — elimina ~100ms de latência sequencial
   const [cachedTrailer, cachedMetaRaw] = await Promise.all([
@@ -450,7 +460,13 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     (env.KV && !fresh) ? env.KV.get(metaCacheKey) : Promise.resolve(null)
   ]);
 
-  if (cachedTrailer) return JSON.parse(cachedTrailer);
+  if (cachedTrailer) {
+    // Propaga para a Cache API deste edge para leituras futuras
+    ctx.waitUntil(cacheApi.put(cacheApiReq, new Response(cachedTrailer, {
+      headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` }
+    })));
+    return JSON.parse(cachedTrailer);
+  }
 
   const parsedCachedMeta = cachedMetaRaw ? JSON.parse(cachedMetaRaw) : null;
 
@@ -591,9 +607,13 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
   const result = { title, links };
 
   if (links.length > 0 && env.KV) {
-    ctx.waitUntil(
-      env.KV.put(cacheKey, JSON.stringify(result), { expirationTtl: CACHE_TTL })
-    );
+    const resultJson = JSON.stringify(result);
+    ctx.waitUntil(Promise.all([
+      env.KV.put(cacheKey, resultJson, { expirationTtl: CACHE_TTL }),
+      cacheApi.put(cacheApiReq, new Response(resultJson, {
+        headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` }
+      }))
+    ]));
   }
 
   return result;
