@@ -441,7 +441,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v95:${imdbId}`;
+  const cacheKey     = `trailer:v96:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // [FIX 4] Cache API — camada edge-local à frente do KV
