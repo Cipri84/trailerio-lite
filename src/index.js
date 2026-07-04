@@ -441,7 +441,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v98:${imdbId}`;
+  const cacheKey     = `trailer:v99:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // [FIX 4] Cache API — camada edge-local à frente do KV
@@ -581,8 +581,8 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     if (r.provider.includes('Apple TV')) return 11;
     const t = tier(r.width, r.height);
     if (t === 3) return 12;
-    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13;
-    if (r.provider.includes('IMDb')) return 14;
+    if (r.provider.includes('IMDb')) return 13;
+    if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 14;
     if (r.provider.includes('MUBI')) return 15;
     return 16 + (3 - t);
   };
