@@ -3,7 +3,7 @@
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
-  version: '1.2.0',
+  version: '1.2.1',
   name: 'Trailerio',
   description: 'Trailer addon - Fandango, Apple TV, Rotten Tomatoes, MUBI, IMDb',
   logo: 'https://raw.githubusercontent.com/9mousaa/trailerio-lite/main/icon.png',
@@ -399,7 +399,8 @@ function pickBestIMDb(urls) {
   if (!best?.url) return null;
   const heightMatch = (best.displayName?.value || '').match(/(\d+)p/);
   const height = heightMatch ? parseInt(heightMatch[1]) : 0;
-  return { url: best.url, provider: `IMDb ${heightMatch ? height + 'p' : 'SD'}`, bitrate: 0, width: 0, height };
+  const width  = height ? Math.round(height * 16 / 9) : 0;  // [FIX] antes ficava sempre 0, o que fazia tier() tratar até 1080p como SD
+  return { url: best.url, provider: `IMDb ${heightMatch ? height + 'p' : 'SD'}`, bitrate: 0, width, height };
 }
 
 async function resolveIMDb(imdbId) {
@@ -441,7 +442,7 @@ async function resolveIMDb(imdbId) {
 // ============== MAIN RESOLVER ==============
 
 async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
-  const cacheKey     = `trailer:v100:${imdbId}`;
+  const cacheKey     = `trailer:v101:${imdbId}`;
   const metaCacheKey = `meta:v1:${imdbId}`;
 
   // [FIX 4] Cache API — camada edge-local à frente do KV
@@ -589,10 +590,26 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
   const hasPT = appleTvPTResult !== null;
 
+  // [FIX] Se houver pelo menos um resultado HD (tier >= 1), remove os SD (tier 0)
+  // da lista — evita que um trailer SD (ex.: IMDb sem stream em HD disponível)
+  // apareça ou seja escolhido quando há alternativas melhores.
+  // Exceção: fontes com override explícito de ordem (PROVIDER_OVERRIDES) são sempre mantidas.
+  const hasExplicitOrder = (r) => {
+    for (const [name, order] of Object.entries(overrides)) {
+      if (r.provider.includes(name) && order !== null) return true;
+    }
+    return false;
+  };
+
   const seen = new Set();
-  const links = [imdbResult, appleTvPTResult, hasPT ? null : appleTvUSResult, rtResult, fandangoResult, mubiResult]
+  const preFilter = [imdbResult, appleTvPTResult, hasPT ? null : appleTvUSResult, rtResult, fandangoResult, mubiResult]
     .filter(r => r !== null)
-    .filter(r => !isExcluded(r))
+    .filter(r => !isExcluded(r));
+
+  const hasHD = preFilter.some(r => tier(r.width, r.height) >= 1);
+
+  const links = preFilter
+    .filter(r => hasExplicitOrder(r) || !hasHD || tier(r.width, r.height) >= 1)
     .sort((a, b) => providerOrder(a) - providerOrder(b) || b.bitrate - a.bitrate)
     .filter(r => {
       if (seen.has(r.url)) return false;
