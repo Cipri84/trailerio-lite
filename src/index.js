@@ -1,11 +1,11 @@
 // Trailerio Lite - Cloudflare Workers Edition
-// KV storage, edge-deployed trailer resolver for Fusion
+// Cache API (sem KV), só IMDb e Rotten Tomatoes
 
 const MANIFEST = {
   id: 'io.trailerio.lite',
   version: '1.2.1',
   name: 'Trailerio',
-  description: 'Trailer addon - Fandango, Apple TV, Rotten Tomatoes, MUBI, IMDb',
+  description: 'Trailer addon - Rotten Tomatoes, IMDb',
   logo: 'https://raw.githubusercontent.com/9mousaa/trailerio-lite/main/icon.png',
   resources: [
     {
@@ -35,7 +35,6 @@ const TIMEOUT_WIKIDATA = 3000;  // Wikidata pode ser lento consoante o edge
 const PROVIDER_OVERRIDES = {
   'tt0108052': { 'Rotten Tomatoes': null },          // Schindler's List - RT removido
   'tt0105695': { 'IMDb': 0 },                        // Unforgiven - IMDb em primeiro
-  'tt14205554': { 'MUBI': 10 },                      // Kpop Demon Hunters - MUBI em primeiro
   'tt0167260':  { 'Rotten Tomatoes': null },         // O Regresso do Rei - RT removido
 };
 
@@ -455,19 +454,10 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     if (edgeCached) return await edgeCached.json();
   }
 
-  // [FIX 1] Ambos os reads KV correm em paralelo — elimina ~100ms de latência sequencial
-  const [cachedTrailer, cachedMetaRaw] = await Promise.all([
-    (env.KV && !fresh) ? env.KV.get(cacheKey)     : Promise.resolve(null),
-    (env.KV && !fresh) ? env.KV.get(metaCacheKey) : Promise.resolve(null)
-  ]);
-
-  if (cachedTrailer) {
-    // Propaga para a Cache API deste edge para leituras futuras
-    ctx.waitUntil(cacheApi.put(cacheApiReq, new Response(cachedTrailer, {
-      headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` }
-    })));
-    return JSON.parse(cachedTrailer);
-  }
+  // Meta em cache (Cache API, sem KV)
+  const metaCacheReq = new Request(`https://trailerio-cache/${metaCacheKey}`);
+  const metaCached   = fresh ? null : await cacheApi.match(metaCacheReq);
+  const cachedMetaRaw = metaCached ? await metaCached.text() : null;
 
   const parsedCachedMeta = cachedMetaRaw ? JSON.parse(cachedMetaRaw) : null;
 
@@ -531,9 +521,11 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
       // Guardar meta em cache para próximas chamadas
       const title = tmdbPartial?.title;
-      if (env.KV && title) {
+      if (title) {
         ctx.waitUntil(
-          env.KV.put(metaCacheKey, JSON.stringify({ title, wikidataIds }), { expirationTtl: META_CACHE_TTL })
+          cacheApi.put(metaCacheReq, new Response(JSON.stringify({ title, wikidataIds }), {
+            headers: { 'Cache-Control': `public, max-age=${META_CACHE_TTL}` }
+          }))
         );
       }
 
@@ -548,16 +540,11 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     }
   })();
 
-  // Todas as fontes correm em paralelo
-  // Apple TV PT e US em paralelo; US suprimido na lista final se PT tiver resultado
-  const [imdbResult, appleTvPTResult, appleTvUSResult, rtResult, fandangoResult, mubiResult, metaResult] =
+  // Só IMDb e Rotten Tomatoes, em paralelo
+  const [imdbResult, rtResult, metaResult] =
     await Promise.all([
       resolveIMDb(imdbId),
-      resolveAppleTV(imdbId, wikidataReady.promise, 'pt'),
-      resolveAppleTV(imdbId, wikidataReady.promise, 'us'),
       resolveRottenTomatoes(wikidataReady.promise),
-      resolveFandango(wikidataReady.promise),
-      resolveMUBI(wikidataReady.promise, tmdbReady.promise),
       metaPipeline
     ]);
 
@@ -578,17 +565,12 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
     for (const [name, order] of Object.entries(overrides)) {
       if (r.provider.includes(name) && order !== null) return order;
     }
-    if (r.provider.includes('Apple TV') && r.locale === 'pt') return 10;
-    if (r.provider.includes('Apple TV')) return 11;
     const t = tier(r.width, r.height);
     if (t === 3) return 12;
     if (t === 2 && r.provider.includes('Rotten Tomatoes')) return 13;
     if (r.provider.includes('IMDb')) return 14;
-    if (r.provider.includes('MUBI')) return 15;
     return 16 + (3 - t);
   };
-
-  const hasPT = appleTvPTResult !== null;
 
   // [FIX] Se houver pelo menos um resultado HD (tier >= 1), remove os SD (tier 0)
   // da lista — evita que um trailer SD (ex.: IMDb sem stream em HD disponível)
@@ -602,7 +584,7 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
   };
 
   const seen = new Set();
-  const preFilter = [imdbResult, appleTvPTResult, hasPT ? null : appleTvUSResult, rtResult, fandangoResult, mubiResult]
+  const preFilter = [imdbResult, rtResult]
     .filter(r => r !== null)
     .filter(r => !isExcluded(r));
 
@@ -623,14 +605,13 @@ async function resolveTrailers(imdbId, type, env, ctx, fresh = false) {
 
   const result = { title, links };
 
-  if (links.length > 0 && env.KV) {
+  if (links.length > 0) {
     const resultJson = JSON.stringify(result);
-    ctx.waitUntil(Promise.all([
-      env.KV.put(cacheKey, resultJson, { expirationTtl: CACHE_TTL }),
+    ctx.waitUntil(
       cacheApi.put(cacheApiReq, new Response(resultJson, {
         headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` }
       }))
-    ]));
+    );
   }
 
   return result;
